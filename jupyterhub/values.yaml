@@ -1,0 +1,39 @@
+# Zero-to-JupyterHub Helm values for one local learning user.
+# REVIEW REQUIRED before install: replace image, tag/digest, storage class, and
+# PVC size. DummyAuthenticator is intentionally local-learning-only.
+hub:
+  config:
+    JupyterHub:
+      admin_access: true
+  service:
+    type: ClusterIP
+
+singleuser:
+  image:
+    name: REPLACE_NOTEBOOK_IMAGE_WITH_PINNED_ARM64_OR_MULTIARCH_DIGEST
+    tag: REPLACE_WITH_EMPTY_STRING_IF_IMAGE_IS_DIGEST_PINNED
+  defaultUrl: /lab
+  serviceAccountName: spark-client
+  extraLabels:
+    spark-lab/driver: interactive-client
+  storage:
+    type: dynamic
+    capacity: REPLACE_NOTEBOOK_PVC_SIZE
+    dynamic:
+      storageClass: REPLACE_STORAGE_CLASS
+  extraEnv:
+    SPARK_LAB_NAMESPACE: spark-lab
+    SPARK_LAB_DRIVER_SERVICE: spark-client-driver.spark-lab.svc
+  cpu:
+    guarantee: REPLACE_NOTEBOOK_CPU_REQUEST
+    limit: REPLACE_NOTEBOOK_CPU_LIMIT
+  memory:
+    guarantee: REPLACE_NOTEBOOK_MEMORY_REQUEST
+    limit: REPLACE_NOTEBOOK_MEMORY_LIMIT
+
+proxy:
+  service:
+    type: ClusterIP
+
+cull:
+  enabled: false

@@ -1,0 +1,90 @@
+# REVIEW REQUIRED before apply:
+# - Replace REPLACE_SILO_IMAGE_WITH_PINNED_ARM64_OR_MULTIARCH_DIGEST.
+# - Create the silo-root-credentials Secret from the example locally; do not
+#   commit real credentials.
+# - Confirm storageClassName and PVC size for the selected Minikube profile.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: silo-data
+  namespace: spark-lab
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: REPLACE_STORAGE_CLASS
+  resources:
+    requests:
+      storage: REPLACE_STORAGE_SIZE
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: silo
+  namespace: spark-lab
+  labels:
+    app.kubernetes.io/name: silo
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: silo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: silo
+        app.kubernetes.io/part-of: spark-platform-learning-lab
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: silo
+          image: REPLACE_SILO_IMAGE_WITH_PINNED_ARM64_OR_MULTIARCH_DIGEST
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - name: s3
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: silo-root-credentials
+                  key: accessKey
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: silo-root-credentials
+                  key: secretKey
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            tcpSocket:
+              port: s3
+          livenessProbe:
+            tcpSocket:
+              port: s3
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: silo-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: silo
+  namespace: spark-lab
+  labels:
+    app.kubernetes.io/name: silo
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+spec:
+  selector:
+    app.kubernetes.io/name: silo
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+    - name: console
+      port: 9001
+      targetPort: console

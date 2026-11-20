@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark-client
+  namespace: spark-lab
+  labels:
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-driver
+  namespace: spark-lab
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "events"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-client-driver
+  namespace: spark-lab
+subjects:
+  - kind: ServiceAccount
+    name: spark-client
+    namespace: spark-lab
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spark-driver

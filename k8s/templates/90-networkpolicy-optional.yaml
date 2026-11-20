@@ -1,0 +1,56 @@
+# OPTIONAL TEMPLATE. Do not apply until the active CNI enforces NetworkPolicy
+# and Kubernetes API/DNS routing has been confirmed. This template intentionally
+# has unresolved CIDR values because those values are cluster-specific.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: spark-executors-restricted
+  namespace: spark-lab
+spec:
+  podSelector:
+    matchLabels:
+      spark-role: executor
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              spark-lab/driver: interactive-client
+      ports:
+        - protocol: TCP
+          port: 7079
+  egress:
+    # Driver RPC and block transfer.
+    - to:
+        - podSelector:
+            matchLabels:
+              spark-lab/driver: interactive-client
+      ports:
+        - protocol: TCP
+          port: 7078
+        - protocol: TCP
+          port: 7079
+    # Silo S3 endpoint.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: silo
+      ports:
+        - protocol: TCP
+          port: 9000
+    # Fill this with the observed DNS Service or Pod CIDR and DNS port.
+    - to:
+        - ipBlock:
+            cidr: REPLACE_CLUSTER_DNS_CIDR
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Fill this with the observed Kubernetes API endpoint/CIDR and port.
+    - to:
+        - ipBlock:
+            cidr: REPLACE_KUBERNETES_API_CIDR
+      ports:
+        - protocol: TCP
+          port: 443
