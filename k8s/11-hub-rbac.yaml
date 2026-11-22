@@ -1,0 +1,57 @@
+# Cluster-scoped permissions for the JupyterHub Hub ServiceAccount
+# (spark-lab/hub). Needed because KubeSpawner.enable_user_namespaces makes the
+# Hub create and watch resources across many namespaces, and because our
+# pre_spawn_hook / delete_forever provision and tear down each user-<name>.
+#
+# This is broad (cluster-wide pod create, secret read). The accepted risk and a
+# future tightening (ValidatingAdmissionPolicy limiting writes to
+# spark-lab/tenant namespaces) are documented in
+# docs/spark_usermanagement_design.md §2 and §3.3.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spark-lab-hub
+  labels:
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+rules:
+  # Create user namespaces; patch to (re)apply Pod Security labels; delete on
+  # user removal. Watch across namespaces for the KubeSpawner reflectors.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  # Notebook Pods and their PVCs, plus the one-shot Silo cleanup Pod.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # Objects the pre_spawn_hook creates in each user namespace.
+  - apiGroups: [""]
+    resources: ["serviceaccounts", "services", "secrets", "resourcequotas", "limitranges"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+  # Allow the Hub to bind ONLY the spark-runner ClusterRole into user
+  # namespaces. Without this a user of RBAC cannot grant a role they do not
+  # themselves hold (privilege-escalation prevention).
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames: ["spark-runner"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spark-lab-hub
+  labels:
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+subjects:
+  - kind: ServiceAccount
+    name: hub
+    namespace: spark-lab
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spark-lab-hub

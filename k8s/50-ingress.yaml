@@ -1,0 +1,132 @@
+# Single external route for the lab: http://<host>:8080/...
+# Traefik (ingressClassName: traefik) publishes these on the Mac via a
+# LoadBalancer Service. Path layout:
+#   /               Portal (index.html)
+#   /hub, /user     JupyterHub (proxy-public)
+#   /spark-ui       Spark UI of the Driver inside the Notebook Pod (Local / Client Mode)
+#   /spark-driver   Spark UI of a running Cluster-Mode Driver Pod
+#   /silo           Silo Web Console
+---
+# Spark UI builds its links from the X-Forwarded-Context request header
+# (UIUtils.uiRoot), so stripping the prefix and announcing it is enough;
+# no Spark configuration change is required.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: spark-ui-prefix
+  namespace: spark-lab
+spec:
+  stripPrefix:
+    prefixes: ["/spark-ui"]
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: spark-ui-context
+  namespace: spark-lab
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Context: /spark-ui
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: spark-driver-prefix
+  namespace: spark-lab
+spec:
+  stripPrefix:
+    prefixes: ["/spark-driver"]
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: spark-driver-context
+  namespace: spark-lab
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Context: /spark-driver
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: silo-prefix
+  namespace: spark-lab
+spec:
+  stripPrefix:
+    prefixes: ["/silo"]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lab-root
+  namespace: spark-lab
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /hub
+            pathType: Prefix
+            backend:
+              service: {name: proxy-public, port: {number: 80}}
+          - path: /user
+            pathType: Prefix
+            backend:
+              service: {name: proxy-public, port: {number: 80}}
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: portal, port: {number: 8080}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lab-spark-ui
+  namespace: spark-lab
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: spark-lab-spark-ui-prefix@kubernetescrd,spark-lab-spark-ui-context@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /spark-ui
+            pathType: Prefix
+            backend:
+              service: {name: spark-client-driver, port: {number: 4040}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lab-spark-driver
+  namespace: spark-lab
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: spark-lab-spark-driver-prefix@kubernetescrd,spark-lab-spark-driver-context@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /spark-driver
+            pathType: Prefix
+            backend:
+              service: {name: spark-cluster-driver-ui, port: {number: 4040}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lab-silo
+  namespace: spark-lab
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: spark-lab-silo-prefix@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /silo
+            pathType: Prefix
+            backend:
+              service: {name: silo, port: {number: 9001}}

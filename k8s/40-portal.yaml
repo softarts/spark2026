@@ -1,0 +1,59 @@
+# Static portal page served at http://<host>:8080/.
+# The page itself lives in portal/index.html; startcluster.sh publishes it as
+# ConfigMap "portal-html" before applying this file.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portal
+  namespace: spark-lab
+  labels:
+    app.kubernetes.io/name: portal
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: portal
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: portal
+        app.kubernetes.io/part-of: spark-platform-learning-lab
+    spec:
+      containers:
+        - name: nginx
+          # nginx 1.29.8, unprivileged variant (listens on 8080, runs as UID 101).
+          image: nginxinc/nginx-unprivileged:1.29-alpine@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: html
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+          readinessProbe:
+            httpGet: {path: /, port: http}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+      volumes:
+        - name: html
+          configMap:
+            name: portal-html
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: portal
+  namespace: spark-lab
+  labels:
+    app.kubernetes.io/name: portal
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+spec:
+  selector:
+    app.kubernetes.io/name: portal
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

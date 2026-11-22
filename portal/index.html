@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spark Platform Learning Lab</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f5f6f8; color: #1f2328; }
+  header { background: #1f2a44; color: #fff; padding: 20px 32px; }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 6px 0 0; opacity: .8; font-size: 14px; }
+  main { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+  .card { background: #fff; border: 1px solid #d8dee4; border-radius: 8px; padding: 16px 20px; margin-bottom: 14px; display: flex; justify-content: space-between; gap: 16px; }
+  .card h2 { margin: 0 0 6px; font-size: 17px; }
+  .card h2 a { color: #0969da; text-decoration: none; }
+  .card p { margin: 4px 0; font-size: 13px; color: #57606a; }
+  .card code { background: #f0f2f4; padding: 1px 5px; border-radius: 4px; }
+  .status { white-space: nowrap; font-size: 13px; font-weight: 600; align-self: center; padding: 4px 10px; border-radius: 12px; background: #eaeef2; }
+  .up { background: #dafbe1; color: #1a7f37; }
+  .down { background: #ffebe9; color: #cf222e; }
+  footer { font-size: 12px; color: #57606a; text-align: center; margin: 24px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Spark Platform Learning Lab</h1>
+  <p>统一入口 · 所有服务都经由同一个 Ingress 端口访问，无需 kubectl port-forward</p>
+</header>
+<main>
+  <div class="card">
+    <div>
+      <h2><a href="/hub/">JupyterHub / Notebook</a></h2>
+      <p>登录后进入 JupyterLab。示例位于 <code>work/examples/</code>（每次启动 Notebook Server 时从镜像刷新）。</p>
+      <p>用户名 <code>spark</code>；密码由 <code>startcluster.sh</code> 打印，保存在 Mac 上的 <code>.lab/credentials.env</code>。</p>
+    </div>
+    <span class="status" data-check="/hub/health">…</span>
+  </div>
+
+  <div class="card">
+    <div>
+      <h2><a href="/spark-ui/">Spark UI — Notebook Driver</a></h2>
+      <p>Local Mode 与 Kubernetes Client Mode：Driver 就在 Notebook Pod 的 Jupyter kernel 进程里。</p>
+      <p>只有 SparkSession 存活时才有内容；<code>spark.stop()</code> 之后显示不可用。仅转发第一个 Session 的 4040 端口。</p>
+    </div>
+    <span class="status" data-check="/spark-ui/api/v1/applications">…</span>
+  </div>
+
+  <div class="card">
+    <div>
+      <h2><a href="/spark-driver/">Spark UI — Cluster Mode Driver Pod</a></h2>
+      <p>Kubernetes Cluster Mode：<code>spark-submit</code> 创建的独立 Driver Pod（标签 <code>spark-role=driver</code>）。</p>
+      <p>只在 Driver Pod 运行期间可用；作业结束后 Driver Pod 变为 Completed，UI 随之消失。</p>
+    </div>
+    <span class="status" data-check="/spark-driver/api/v1/applications">…</span>
+  </div>
+
+  <div class="card">
+    <div>
+      <h2><a href="/silo/">Silo Object Storage Console</a></h2>
+      <p>S3-compatible 对象存储（PGSTY 维护的 MinIO 社区分支）的 Web 控制台：浏览 Bucket、预览和下载对象。</p>
+      <p>Access Key / Secret Key 由 <code>startcluster.sh</code> 打印。集群内 S3 Endpoint：<code>http://silo.spark-lab.svc:9000</code>。</p>
+    </div>
+    <span class="status" data-check="/silo/">…</span>
+  </div>
+</main>
+<footer>
+  个人学习环境：DummyAuthenticator、无 TLS。只在可信局域网内使用，不要暴露到公网。
+</footer>
+<script>
+  // Lightweight reachability check: any HTTP status below 500 counts as "up".
+  // 502/503/504 from Traefik means the backend Pod or SparkSession is not running.
+  // For Spark UIs the REST API response also names the running application.
+  document.querySelectorAll("[data-check]").forEach(async (el) => {
+    try {
+      const r = await fetch(el.dataset.check, { redirect: "manual", cache: "no-store" });
+      const up = r.type === "opaqueredirect" || r.status < 500;
+      let label = up ? "运行中" : "未运行 (" + r.status + ")";
+      if (up && el.dataset.check.includes("/api/v1/applications")) {
+        try {
+          const apps = await r.json();
+          if (apps.length) label = "运行中: " + apps.map((a) => a.name).join(", ");
+        } catch (e) { /* keep the generic label */ }
+      }
+      el.textContent = label;
+      el.classList.add(up ? "up" : "down");
+    } catch (e) {
+      el.textContent = "不可达";
+      el.classList.add("down");
+    }
+  });
+</script>
+</body>
+</html>

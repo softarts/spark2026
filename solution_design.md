@@ -3,7 +3,7 @@
 **文档类型：** Solution Design / Implementation Brief  
 **目标读者：** 后续负责实现本实验环境的 AI Agent 或工程师  
 **当前范围：** Phase 1 — Interactive Spark Development Environment  
-**文档状态：** 设计基线；具体版本和部署细节须在实现前验证  
+**文档状态：** Phase 1 已实现并验证（2026-11-22），实现记录见 §13，后续阶段计划见 §14  
 **核心目标：** 恢复并升级已有 Apache Spark / PySpark 平台经验，理解现代 Spark 交互式开发平台与分布式执行机制。
 
 ---
@@ -214,7 +214,7 @@ Catalog / Metadata Governance (later phase)
 
 **Phase 1 核心组件：**
 
-1. Minikube
+1. Docker Desktop Kubernetes（原设计为 Minikube，实施时改用，原因见 §13.1）
 2. Kubernetes
 3. JupyterHub
 4. User Notebook Pod
@@ -223,6 +223,7 @@ Catalog / Metadata Governance (later phase)
 7. External GitHub
 8. Persistent Volume / PVC
 9. Spark UI
+10. Traefik Ingress + Portal 入口页（2026-11-22 增加：统一外部入口，见 §13.2）
 
 Phase 1 不部署 Delta Lake、Hive Metastore、AWS Glue Data Catalog 或 Unity Catalog。
 
@@ -278,7 +279,9 @@ Phase 1 不部署 Delta Lake、Hive Metastore、AWS Glue Data Catalog 或 Unity 
 
 | 组件 | Phase 1 职责 |
 |---|---|
-| Minikube | 本地 Kubernetes 集群 |
+| Docker Desktop Kubernetes | 本地 Kubernetes 集群（kind 模式单节点） |
+| Traefik | Ingress Controller；唯一对外入口 `http://<host>:8080` |
+| Portal | 静态入口页，链接 JupyterHub、Spark UI、Silo Console |
 | JupyterHub | 登录入口、用户服务器生命周期管理 |
 | User Notebook Pod | 用户开发环境，保存 Notebook，安装 Python 依赖，运行 PySpark |
 | Apache Spark | 分布式计算引擎 |
@@ -286,7 +289,7 @@ Phase 1 不部署 Delta Lake、Hive Metastore、AWS Glue Data Catalog 或 Unity 
 | Spark Executors | 执行分配的 Tasks、缓存数据并向 Driver 汇报 |
 | Silo | 提供 S3-compatible Object Storage API |
 | Git | Notebook Pod 内的本地版本控制客户端 |
-| GitHub | 外部远程代码仓库，不部署在 Minikube 内 |
+| GitHub | 外部远程代码仓库，不部署在集群内 |
 | PVC | Notebook 工作目录持久化 |
 | Spark UI | 观察 Jobs、Stages、Tasks、Executors、Storage 等信息 |
 
@@ -314,7 +317,7 @@ Silo（PGSTY 维护的 MinIO 社区分支）作为优先评估候选，主要理
 
 ### 5.5 Git 与 GitHub
 
-无需在 Minikube 内部署 Git Server 或 GitHub Enterprise。
+无需在 Kubernetes 集群内部署 Git Server 或 GitHub Enterprise。
 
 - Git：安装在 User Notebook Pod 中，负责本地版本控制。
 - GitHub：使用外部远程仓库，保存代码和 Notebook 版本。
@@ -476,61 +479,75 @@ s3a://spark-data/output/
 
 以下全部为验收项目；每项必须有可复现的证据（命令输出、Pod 信息、日志、Spark UI 截图或架构说明）。
 
+状态更新于 2026-11-22。`[x]` 表示已有实测证据（证据列给出出处；README 指 README.md 的章节），`[ ]` 表示尚未完成。
+
 ### User Experience
 
-- [ ] Minikube Kubernetes Cluster 正常运行
-- [ ] 用户可以登录 JupyterHub
-- [ ] JupyterHub 能创建 User Notebook Pod
-- [ ] Notebook 内容在 Pod 重启或重建后按预期持久化（PVC）
-- [ ] Notebook Pod 可以访问外部 GitHub
-- [ ] 可以 Clone、Commit、Push
-- [ ] Notebook 中可以运行 PySpark
+| | 项目 | 证据 |
+|---|---|---|
+| [x] | Kubernetes 集群正常运行（Docker Desktop，替代 Minikube） | `kubectl get nodes`：`desktop-control-plane Ready v1.36.1`；`startcluster.sh` 可从 Docker 未启动状态冷启动（约 57 秒） |
+| [x] | 用户可以登录 JupyterHub | 通过 `http://<LAN IP>:8080/hub/login` 登录：返回 302 跳转到 `/hub/spawn` |
+| [x] | JupyterHub 能创建 User Notebook Pod | 创建了 `jupyter-spark`，使用镜像 `spark-lab-runtime:0.3.0`；`/user/spark/lab` 返回 200 |
+| [x] | Notebook 内容在 Pod 重建后持久化（PVC） | 写入 `work/persist-check.txt`，执行 `stopcluster.sh` 和 `startcluster.sh` 后重新 spawn，文件内容仍为 `keep-me` |
+| [x] | Notebook Pod 可以访问外部 GitHub | 在 Pod 中 `git clone https://github.com/octocat/Hello-World.git` 成功 |
+| [ ] | 可以 Clone、Commit、Push | Clone 和 Commit 已验证；Push 需要用户自己的 GitHub 凭证（SSH Key 或 Fine-grained PAT），尚未执行 |
+| [x] | Notebook 中可以运行 PySpark | 用 `nbconvert --execute` 执行两个示例 Notebook，均成功（README §3.2、§3.3） |
 
 ### Spark Local Mode
 
-- [ ] 创建 SparkSession
-- [ ] WordCount Local Mode 成功
-- [ ] 可以访问 Spark UI
-- [ ] 确认 Driver 进程位置
-- [ ] 确认 Local Mode 的执行进程和线程所在位置
+| | 项目 | 证据 |
+|---|---|---|
+| [x] | 创建 SparkSession | `master: local[*]` |
+| [x] | WordCount Local Mode 成功 | `[('kubernetes', 1), ('notebook', 1), ('pyspark', 1), ('spark', 3)]` |
+| [x] | 可以访问 Spark UI | 运行期间 `/spark-ui/jobs/` 经 Ingress 返回 200，页面链接带 `/spark-ui/` 前缀 |
+| [x] | 确认 Driver 进程位置 | Driver 在 `jupyter-spark` Pod 中，是 kernel 通过 Py4J 启动的 JVM |
+| [x] | 确认执行进程和线程所在位置 | task 中读取的 host 都是 `jupyter-spark`；Python worker PID（144/145）与 kernel PID（35）不同；Driver 看到的 executor 数为 1，即 Driver 自身；Kubernetes 中没有 Executor Pod |
 
 ### Spark Kubernetes Client Mode
 
-- [ ] WordCount Client Mode 成功
-- [ ] 确认 Driver 位置
-- [ ] 观察到 Kubernetes Executor Pods
-- [ ] 能够将 Spark UI Executor 信息与 Kubernetes Pods 对应
-- [ ] 观察 Executor 结束后的资源清理行为
+| | 项目 | 证据 |
+|---|---|---|
+| [x] | WordCount Client Mode 成功 | `02_wordcount_executor.ipynb` 输出完整的计数结果 |
+| [x] | 确认 Driver 位置 | `deployMode: client`，Driver 在 Pod `jupyter-spark` 中 |
+| [x] | 观察到 Kubernetes Executor Pods | `wordcount-k8s-client-…-exec-1/2` 状态为 Running |
+| [x] | Spark UI Executor 信息与 Pods 对应 | task 中读取的主机名就是 Executor Pod 名；REST API `/executors` 返回的 `hostPort` 10.244.0.34/35:7079 与 Pod IP 一致 |
+| [x] | Executor 结束后的资源清理 | `spark.stop()` 后 Executor Pod 被删除。修复 RBAC 之前，Pod 停留在 Completed 状态，并报 `deletecollection` 403（见 §13.4） |
 
 ### Spark Kubernetes Cluster Mode
 
-- [ ] 独立 `wordcount.py` 可提交
-- [ ] 确认 Kubernetes 创建独立 Driver Pod
-- [ ] 观察 Executor Pods
-- [ ] 确认应用结束后的 Pod 生命周期
-- [ ] 理解 Notebook 与 Driver 的关系
+| | 项目 | 证据 |
+|---|---|---|
+| [x] | 独立 `wordcount.py` 可提交 | `spark-submit --deploy-mode cluster local:///opt/spark-lab/examples/jobs/wordcount.py`，作业 `phase: Succeeded` |
+| [x] | Kubernetes 创建独立 Driver Pod | `wordcount-cluster-…-driver`，ServiceAccount 为 `spark-client`，镜像为 `spark-lab-runtime:0.3.0` |
+| [x] | 观察 Executor Pods | Driver Pod 创建了 `wordcount-kubernetes-cluster-…-exec-1/2` |
+| [x] | 应用结束后的 Pod 生命周期 | Executor Pod 被删除；Driver Pod 保留为 Completed，可查看日志；`/spark-driver/` 在 Driver 运行期间返回 200，结束后返回 503 |
+| [x] | Notebook 与 Driver 的关系 | Notebook 只运行 `spark-submit` 客户端，客户端等待作业结束后退出；Driver 是另一个 Pod，Notebook 停止也不影响它 |
 
 ### Object Storage
 
-- [ ] Silo 正常运行
-- [ ] Bucket 创建成功
-- [ ] Spark Driver 可访问 Silo
-- [ ] Spark Executors 可访问 Silo
-- [ ] Spark S3A 读取成功
-- [ ] Spark S3A 写入成功
-- [ ] 输出对象可从 Silo 侧确认
+| | 项目 | 证据 |
+|---|---|---|
+| [x] | Silo 正常运行 | `silo version RELEASE.2026-11-12T00-00-00Z`，Console 位于 `/silo/` |
+| [x] | Bucket 创建成功 | `startcluster.sh` 中执行 `mcli mb --ignore-existing local/spark-data` |
+| [x] | Spark Driver 可访问 Silo | `test_s3a.py`（Local Mode）读写成功 |
+| [x] | Spark Executors 可访问 Silo | Cluster Mode：Executor 读取 `s3a://spark-data/input/sample.txt` 并写入 `cluster-wordcount/output/part-*.json` |
+| [x] | Spark S3A 读取成功 | 同上 |
+| [x] | Spark S3A 写入成功 | 写出 Parquet（`test_s3a.py`）和 JSON（Cluster Mode） |
+| [x] | 输出对象可从 Silo 侧确认 | Console Bucket 列表；`scripts/silo-export.sh` 导出的 JSON 内容为 `{"word":"spark","count":3}`，Parquet 文件首尾为 `PAR1` |
 
 ### Final Documentation
 
-- [ ] 输出最终部署架构图
-- [ ] 输出 Local / Client / Cluster 三种模式的执行链路图
-- [ ] 明确回答 Notebook 是否就是 Driver
-- [ ] 明确回答 Driver 何时创建
-- [ ] 明确回答 Driver 如何创建和管理 Executor
-- [ ] 明确回答 Executor 何时销毁
-- [ ] 明确回答 Python 依赖如何提供给 Executor
-- [ ] 明确回答 Notebook Interactive 模式与 Batch Spark 模式的区别
-- [ ] 记录实际组件版本和关键配置
+| | 项目 | 出处 |
+|---|---|---|
+| [x] | 最终部署架构图 | §13.3 |
+| [x] | Local / Client / Cluster 执行链路图 | §13.3 |
+| [x] | Notebook 是否就是 Driver | §13.6 Q1 |
+| [x] | Driver 何时创建 | §13.6 Q2 |
+| [x] | Driver 如何创建和管理 Executor | §13.6 Q3 |
+| [x] | Executor 何时销毁 | §13.6 Q4 |
+| [x] | Python 依赖如何提供给 Executor | §13.6 Q5（含实测） |
+| [x] | Interactive 与 Batch 的区别 | §13.6 Q6 |
+| [x] | 实际组件版本和关键配置 | README §5，§13.5 |
 
 ---
 
@@ -541,7 +558,7 @@ Phase 1 的主要产出不是单纯的代码仓库，而是经实验验证的架
 必须交付：
 
 1. **可运行的实验环境**
-   - Minikube
+   - Docker Desktop Kubernetes（原为 Minikube）
    - JupyterHub
    - User Notebook Pod
    - Spark / PySpark
@@ -565,7 +582,7 @@ Phase 1 的主要产出不是单纯的代码仓库，而是经实验验证的架
    - Python 依赖传播
    - Spark UI 与 Kubernetes 观察方式
 5. **版本与配置清单**
-   - Kubernetes / Minikube
+   - Kubernetes / Docker Desktop
    - JupyterHub / Jupyter Server
    - Spark / PySpark
    - Java
@@ -579,6 +596,8 @@ Phase 1 的主要产出不是单纯的代码仓库，而是经实验验证的架
 ## 9. Future Phases — Incremental Extension Only
 
 后续阶段必须建立在 Phase 1 已运行的环境上，不应为了加入新组件而重构 Phase 1 的基本用户体验。
+
+**2026-11-22：** 基于已实现环境的可行性评估和具体计划见 §14。
 
 ### Phase 2 — Spark on Kubernetes Deep Dive
 
@@ -656,7 +675,7 @@ Phase 1 不部署任何上述 Catalog。
 6. 不要在 Phase 1 部署 Airflow、Kafka、Control-M 或其他无关服务。
 7. 不要创建 Spring Boot / Spring Batch 风格的 Spark Job Service。
 8. WordCount 只作为执行机制验证，不把项目变成 Spark 入门教程。
-9. GitHub 使用外部托管服务；Minikube 内只安装 Git 客户端。
+9. GitHub 使用外部托管服务；集群内只安装 Git 客户端。
 10. Notebook 持久化使用 PVC；不要误以为 GitHub 能替代 Notebook 工作目录持久化。
 11. Silo 的维护状态、License、镜像来源和 S3 API 兼容性必须在实施前核实；不能把社区分支描述为 MinIO 官方产品或官方维护版本。
 12. Spark S3A 测试必须确认 Driver 和 Executor 均能访问对象存储。
@@ -675,7 +694,7 @@ Phase 1 不部署任何上述 Catalog。
 - JupyterHub 使用何种 Authenticator？个人实验可以采用简单认证方式，但不得将其描述为企业生产安全配置。
 - Notebook Pod 的 PVC 使用哪种 StorageClass？
 - Spark Driver Pod 是否需要额外 Service / headless service 或特定网络配置？
-- Minikube 节点资源是否足够同时运行 JupyterHub、Notebook、Spark Driver、多个 Executors 和 Silo？
+- 节点资源是否足够同时运行 JupyterHub、Notebook、Spark Driver、多个 Executors 和 Silo？
 - Silo 当前发布、维护和 S3 API 兼容性是否满足实验需求？
 - Spark S3A Connector 对应的 Hadoop AWS 与 AWS SDK 版本组合是什么？
 - Spark UI 通过何种方式从本地浏览器访问？
@@ -684,11 +703,13 @@ Phase 1 不部署任何上述 Catalog。
 
 所有问题应通过官方文档、版本矩阵和实际实验解决，并在实现文档中记录来源和结论。
 
+**2026-11-22：** 以上问题的实测结论见 §13.5。
+
 ---
 
 ## 12. Definition of Success
 
-Phase 1 成功的定义不是“Minikube 里安装了几个组件”，而是：
+Phase 1 成功的定义不是“Kubernetes 里安装了几个组件”，而是：
 
 > 用户能够登录 JupyterHub，获得持久化 Notebook 开发环境，在 Notebook 中编写和运行 PySpark WordCount；能够分别验证 Local Mode、Kubernetes Client Mode 和 Kubernetes Cluster Mode；能够通过 Spark UI 与 Kubernetes 观察 Driver 和 Executor 的实际位置与生命周期；并能够让 Spark Driver 和 Executors 通过 S3A 访问 Silo 中的对象数据。
 
@@ -703,6 +724,267 @@ Phase 1 成功的定义不是“Minikube 里安装了几个组件”，而是：
 7. Local、Kubernetes Client、Kubernetes Cluster 三种执行路径有何区别？
 
 **项目主线：从传统 Spark + Kubernetes + Hive/HDFS/Parquet 经验，升级到现代 Spark + Kubernetes + S3-compatible Object Storage，并在后续阶段引入 Delta Lake 与 Catalog。**
+
+---
+
+## 13. Phase 1 Implementation Record（2026-11-22）
+
+本节记录 Phase 1 的实际实现、与原设计的偏差，以及实验结论。操作说明见 README.md。
+
+### 13.1 平台偏差：Docker Desktop Kubernetes 替代 Minikube
+
+| 项目 | 结论 |
+|---|---|
+| 实际平台 | Docker Desktop 内置 Kubernetes，kind 模式单节点 `desktop-control-plane`。Kubernetes v1.36.1，containerd 2.3.1，arm64，节点可分配 18 CPU / 16 GiB |
+| 原因 | Apple Silicon 原生 arm64，不需要额外的虚拟机层；环境中已经在用 |
+| 影响 1 | 节点有自己的 containerd，`docker build` 出的镜像 Pod 看不到（实测 `ErrImageNeverPull`）。`startcluster.sh` 用一个临时特权 Pod 执行 `ctr images import`，并按构建输入哈希跳过重复导入 |
+| 影响 2 | LoadBalancer Service 被 Docker Desktop 发布在 Mac 所有网卡上（实测 `*:8080`），局域网可以直接访问 |
+| 影响 3 | 节点没有挂载 Mac 的 `/Users`（实测 hostPath 报 `not a directory`），PVC 数据只在虚拟机磁盘镜像 `Docker.raw` 中 |
+
+### 13.2 统一入口与一键启停（2026-11-22 新增）
+
+需求：只用一个启动脚本；浏览器访问一个固定端口；不使用 port-forward；支持从其他机器访问；提供统一入口页。
+
+| 设计点 | 实现 |
+|---|---|
+| Ingress Controller | Traefik（chart 42.4.1，Proxy v3.7.19）。社区版 ingress-nginx 已于 2026-03 退役，不再选用 |
+| 对外端口 | Traefik 的 LoadBalancer Service，端口 8080 |
+| 路由 | `/` Portal；`/hub`、`/user` JupyterHub；`/spark-ui` Notebook Driver UI；`/spark-driver` Cluster Mode Driver UI；`/silo` Silo Console（`k8s/50-ingress.yaml`） |
+| Spark UI 子路径 | 用 Traefik Middleware 去掉前缀，并加上 `X-Forwarded-Context`，页面链接据此生成。302 跳转还需要 `spark.ui.proxyRedirectUri=/`，已写入镜像的 `spark-defaults.conf` |
+| Cluster Driver UI | Service `spark-cluster-driver-ui` 的 selector 为 `spark-role=driver`。Completed 状态的 Pod 不是 Ready，不会接收流量 |
+| Silo Console 子路径 | `MINIO_BROWSER_REDIRECT_URL=http://localhost:8080/silo`；Console 不检查主机名，局域网 IP 也能登录 |
+| 启动 | `startcluster.sh`：自动启动 Docker Desktop → 镜像（按需构建和导入）→ 凭证 → Silo 和 Bucket → Portal → Traefik → JupyterHub → 健康检查 |
+| 停止 | `stopcluster.sh` 把副本数缩到 0，保留 PVC；`--purge` 删除全部组件和数据 |
+| 凭证 | `.lab/credentials.env`（git-ignored，第一次运行时随机生成）。JupyterHub 密码不再写在 `values.yaml` 中 |
+| 示例分发 | 镜像中的 `/opt/spark-lab/examples` 由 init container 在每次启动时复制到 PVC 的 `work/examples` |
+| 精简 | 关闭了 Z2JH 的 user-scheduler、continuous-image-puller 和 user-placeholder。它们用于多节点集群，单节点环境中没有作用 |
+
+### 13.3 部署架构与执行链路
+
+**部署架构：**
+
+```text
+Browser (Mac / LAN)  ──http://<host>:8080──►  Docker Desktop (*:8080)
+                                                   │
+┌──────────────────────── Kubernetes: desktop-control-plane ─────────────────────────┐
+│  ns traefik:   traefik (Ingress Controller, LoadBalancer :8080)                    │
+│                   │ /        /hub,/user        /spark-ui        /spark-driver  /silo│
+│  ns spark-lab:    ▼            ▼                  ▼                 ▼            ▼   │
+│               portal      proxy-public ──► hub   spark-client-   spark-cluster-  silo│
+│               (nginx)     (CHP)          (KubeSpawner)  driver:4040  driver-ui:4040 :9001│
+│                              │                  │                 │          :9000│
+│                              ▼                  ▼                 ▼            ▲  │
+│                        jupyter-spark  ◄── PVC claim-spark   *-driver Pods     │  │
+│                        (Notebook; Local/Client Driver)                        │  │
+│                              │  K8s API (SA spark-client)                     │  │
+│                              ▼                                               │  │
+│                        *-exec-N Executor Pods ──────── S3A ──────────────────┘  │
+│                                                   silo ◄── PVC silo-data         │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Local Mode：**
+
+```text
+jupyter-spark Pod
+└── Jupyter kernel (Python) ──Py4J──► Driver JVM
+                                        ├── task threads (local[*])
+                                        └── Python workers (fork) 执行 lambda
+Kubernetes 中没有 Executor Pod
+```
+
+**Kubernetes Client Mode：**
+
+```text
+jupyter-spark Pod                              Kubernetes API
+└── kernel ──Py4J──► Driver JVM ──create pods──►  (SA spark-client)
+         ▲                │                          │
+         │ 7078 RPC / 7079 BlockManager               ▼
+         └──── spark-client-driver.spark-lab.svc ◄── Executor Pod 1..N
+                (headless Service)                    └── S3A ──► silo:9000
+```
+
+**Kubernetes Cluster Mode：**
+
+```text
+jupyter-spark Pod: spark-submit (客户端，等待作业结束后退出)
+      │ create Driver Pod + Driver Service
+      ▼
+<name>-driver Pod (Driver JVM + Python) ──create pods──► Executor Pod 1..N
+      │ 作业结束：删除 Executors，Driver Pod 保留为 Completed          └── S3A ──► silo:9000
+```
+
+### 13.4 实施中发现的问题与修复
+
+| 问题 | 现象 | 修复 |
+|---|---|---|
+| 节点看不到本地镜像 | init container 报 `ErrImageNeverPull` | 导入节点 containerd（§13.1） |
+| 新 PVC 属主是 root | 原 README 要求手动 `chown` | init container 以 root 运行并 `chown`；`WORKDIR` 改为 `/home/jovyan`，这个目录一定存在 |
+| Spark 4.1 stop 时批量删除资源 | `cannot deletecollection services` 和 `persistentvolumeclaims`（403），Executor Pod 停留在 Completed 状态 | Role 增加 `deletecollection` 权限和 `persistentvolumeclaims` 资源 |
+| 固定的 `podNamePrefix` | 连续运行时报 `pods "…-exec-1" already exists`（409） | 去掉这个配置，使用 Spark 默认的唯一前缀 |
+| Spark UI 根路径跳转丢失前缀 | `/spark-ui/` 跳转到 `/jobs/`，返回 404（用户反馈） | 镜像中的 `spark-defaults.conf` 设置 `spark.ui.proxyRedirectUri /`。已实测 Local Mode 和 Cluster Mode 的跳转都带上前缀 |
+| Traefik chart 有严格 schema | 未知字段 `logs` 导致安装失败 | 删除该字段（chart 42.x 默认不开 access log） |
+
+### 13.5 §11 Open Questions 的结论
+
+| 问题 | 结论 |
+|---|---|
+| Client 和 Cluster Mode 的启动参数 | README §3.3（SparkSession 配置）和 §3.5（`spark-submit`） |
+| Authenticator | DummyAuthenticator，随机密码。仅用于个人学习，不是生产配置 |
+| StorageClass | `standard`（rancher.io/local-path）；该存储类忽略 `fsGroup`，需要用 init container 修正属主 |
+| Driver 网络 | Client Mode 需要 headless Service 加固定的 7078/7079 端口；Cluster Mode 由 Spark 自动创建 Driver Service |
+| 节点资源 | 18 CPU / 16 GiB。空闲时所有组件的 requests 约 1 CPU / 370 MiB；每个 Executor 约 1.4 GiB（1g 加 overhead） |
+| Silo | `RELEASE.2026-11-12T00-00-00Z`，AGPLv3，由 PGSTY 维护；S3A 读写和 Console 正常 |
+| S3A 版本组合 | hadoop-aws 3.4.2，AWS SDK v2 bundle 2.29.52 |
+| Spark UI 访问 | Ingress 子路径 `/spark-ui/` 和 `/spark-driver/`；不需要 port-forward |
+| Cluster Driver 的 Silo 凭证 | `spark.kubernetes.driver.secretKeyRef.*` 从 Secret 注入（已验证），不出现在命令行上 |
+| Python 环境一致性 | Notebook、Driver、Executor 使用同一个镜像（Python 3.10.12，实测一致） |
+
+### 13.6 Definition of Success 的实验回答
+
+1. **Notebook 是否就是 Driver？** 取决于运行模式。在本实验中，Local 和 Client Mode 下 Driver 就是 Notebook kernel 启动的 JVM，位于 Notebook Pod 中。Cluster Mode 下 Notebook 只是提交客户端，Driver 在独立的 Pod 中。Databricks 和 CML 的内部拓扑没有在本实验中验证，不能用本实验的结果推断。
+2. **Driver 何时创建？** Local 和 Client Mode：Notebook 中第一次执行 `SparkSession.builder.getOrCreate()` 时，在 kernel 进程中启动 Driver JVM。Cluster Mode：`spark-submit` 调用 Kubernetes API 创建 Driver Pod。
+3. **Driver 如何创建和管理 Executor？** Driver 中的 `KubernetesClusterSchedulerBackend` 通过 ServiceAccount `spark-client` 调用 Kubernetes API 创建 Executor Pod，并 watch Pod 状态。Executor 启动后回连 Driver 注册（Client Mode 经过 headless Service）。Client Mode 的 Executor Pod 通过 `spark.kubernetes.driver.pod.name` 设置 ownerReference 指向 Notebook Pod，Notebook Pod 被删除时 Executor Pod 也会被回收。
+4. **Executor 何时销毁？** 在 `spark.stop()` 时，或 Cluster Mode 作业结束时，Driver 主动删除 Executor Pod（需要 `delete` 和 `deletecollection` 权限）。kernel 一直存活且没有调用 `stop()` 时，Executor 会一直占用资源。Phase 2 的 Dynamic Allocation 会研究空闲时回收 Executor。
+5. **Python 依赖如何提供给 Executor？** 实测：在 Notebook 中 `pip install --user tabulate`，包安装在 PVC 的 `~/.local` 下，Driver 能 import，Executor 报 `ImportError`（Executor 不挂载 Notebook 的 PVC）。`sc.addPyFile()` 加入单个 `.py` 文件不能解决包目录的问题；把包目录打成 zip 再 `addPyFile("deps.zip")` 后，Executor import 成功（`./deps.zip/tabulate/__init__.py`）。结论：运行时镜像是基线；纯 Python 包可以用 zip 分发（`addPyFile` 或 `--py-files`）；带原生扩展的包需要放进镜像，或用 `--archives` 分发打包好的 Python 环境（Phase 2 验证）。
+6. **Interactive 与 Batch 的区别：** Interactive（Local 或 Client Mode）中 Driver 的生命周期等于 kernel 的生命周期，Executor 在 Session 存活期间一直保留，适合探索，但空闲时也占用资源。Batch（Cluster Mode）中 Driver 的生命周期等于一次作业，作业结束后资源释放，Driver Pod 保留日志，与 Notebook 互不影响。
+7. **三种执行路径的区别：** 见 §13.3。区别在于 Driver 所在的进程和 Pod、Executor 是否是独立的 Pod，以及 Executor 回连 Driver 的网络路径。
+
+---
+
+## 14. Phase 2–5 可行性评估与计划（2026-11-22）
+
+评估依据：当前环境（Spark 4.1.0、Hadoop 3.4.2、单节点 18 CPU / 16 GiB、Silo、镜像中没有 Delta、pyarrow、pandas 和 spark-hadoop-cloud），以及截至 2026-11 的公开版本信息。所有新增组件都要通过 `startcluster.sh` 一键启动，并在 Portal 上增加入口，不改变 Phase 1 的使用方式。"现在可做"表示不依赖外部账号、不需要新的版本决策；"需核实"表示动手之前还要做版本或兼容性验证。
+
+### 14.1 总览
+
+| Phase | 现在可做 | 需要新增的组件 | 需要用户决策或外部资源 |
+|---|---|---|---|
+| 2 Spark on K8s Deep Dive | 全部核心项 | Spark History Server（同一个镜像） | Spark Operator 是否纳入（可选） |
+| 3 Object Storage & Parquet | 全部核心项 | 镜像增加 pyarrow、pandas、`spark-hadoop-cloud` | 无 |
+| 4 Delta Lake | 全部核心项 | 镜像增加 Delta Lake 4.1.x JAR 和 `delta-spark` | 无 |
+| 5 Catalog | Hive Metastore（内嵌 Derby，然后独立服务）、Unity Catalog OSS（需核实） | HMS（加 PostgreSQL）、UC OSS server | AWS Glue 需要 AWS 账号，并会产生费用 |
+
+### 14.2 Phase 2 — Spark on Kubernetes Deep Dive
+
+| # | 实验 | 做法 | 验证 |
+|---|---|---|---|
+| 2.1 | Spark History Server | 用同一个运行时镜像运行 `start-history-server.sh`，读取 `s3a://spark-logs/`；作业设置 `spark.eventLog.enabled=true`。Ingress 路径 `/spark-history/`，加入 Portal | 作业结束后仍能查看 UI。这解决了 §2.2 中"UI 随 Driver 消失"的限制 |
+| 2.2 | Dynamic Allocation | `spark.dynamicAllocation.enabled=true` 配合 `shuffleTracking.enabled=true`（Kubernetes 上没有 External Shuffle Service） | 观察空闲 Executor 被回收、有负载时扩容；对照 Kubernetes Events |
+| 2.3 | Requests / Limits / Overhead | 调整 `spark.executor.memory`、`memoryOverhead`、`request.cores`、`limit.cores` | 对比 Pod spec 与 Spark 配置；故意制造 OOMKilled，观察 Driver 如何重建 Executor |
+| 2.4 | Pod Template | `spark.kubernetes.executor.podTemplateFile` 设置标签、节点亲和性和 sidecar | `kubectl get pod -o yaml` 中可以看到合并结果 |
+| 2.5 | 故障与生命周期 | 手动删除 Executor Pod 或 Driver Pod；在 Client Mode 中重启 kernel | Driver 的重试行为；ownerReference 的级联回收 |
+| 2.6 | Python 依赖分发 | 打包 Python 环境（venv-pack），通过 `--archives env.tar.gz#env` 和 `PYSPARK_PYTHON=./env/bin/python` 分发；与 zip 方式和镜像方式对比 | 用带原生扩展的包验证 Executor 能否 import |
+| 2.7 | 可观察性 | 对照 Spark UI、REST API、`kubectl logs` 和 Events | 写成对照表 |
+| 2.8（可选） | Spark Connect | Spark 4.x 的 Spark Connect Server 单独作为一个 Pod 运行，Notebook 只作为瘦客户端 | 第三种拓扑："Notebook 既不是 Driver，也不是提交客户端"。这与 Databricks Connect 的模型相关，需要实验确认 |
+| 2.9（可选） | Spark Operator | `SparkApplication` CRD 声明式提交 | 需要先核实 Kubeflow spark-operator 对 Spark 4.1 的支持情况，再决定是否纳入 |
+
+资源：History Server 约 1 GiB；其余实验复用现有 Executor 配额。
+
+### 14.3 Phase 3 — Object Storage and Parquet
+
+| # | 实验 | 做法 | 验证 |
+|---|---|---|---|
+| 3.0 | 镜像补充 | 加入 pyarrow 和 pandas（Arrow 加速 `toPandas`，Pandas UDF）；加入 `spark-hadoop-cloud_2.13-4.1.0`（S3A committer 绑定类） | 版本与 Spark 4.1 一致 |
+| 3.1 | 观察 S3A 实际发出的 S3 请求 | Silo 镜像自带的 `mcli admin trace` 可以实时显示 LIST、HEAD、PUT、COPY、DELETE | 看到 FileOutputCommitter 提交时 rename 在 S3 上变成 COPY 加 DELETE |
+| 3.2 | Committer 对比 | 默认 FileOutputCommitter 与 S3A Magic Committer 对比 | 请求数量和耗时；`_SUCCESS` 文件的内容（Magic Committer 会写入 JSON 清单） |
+| 3.3 | Partitioning | 用 `partitionBy` 写入合成数据集 | 目录布局；分区裁剪的效果（`explain`、读取文件数） |
+| 3.4 | Small Files | 对比 `repartition` 与 `coalesce`，`maxRecordsPerFile` | 文件数量与读取耗时 |
+| 3.5 | 并发写入 | 两个作业同时 overwrite 同一路径 | 观察对象存储上没有原子 rename 带来的后果，为 Phase 4 做铺垫 |
+| 3.6 | 与 HDFS 的语义差异 | 整理成文档：rename、目录、列表一致性 | 引用 Hadoop S3A 官方文档 |
+
+数据：只使用 Spark 生成的合成数据，不使用业务数据。磁盘：虚拟机还有约 402 GB 可用空间；local-path 不强制执行 PVC 的 5Gi 容量。
+
+### 14.4 Phase 4 — Delta Lake
+
+版本：Delta Lake 4.1.0 默认基于 Spark 4.1.0 构建（[Delta 4.1.0 release](https://github.com/delta-io/delta/releases/tag/v4.1.0)）；之后的 4.4.x 同时支持 Spark 4.2、4.1 和 4.0.1（[Databricks 2026 摘要](https://answers.databricks.com/state-data-engineering-2026)）。实施前要按 [Delta 版本矩阵](https://docs.delta.io/releases/) 选定与 Spark 4.1.0 匹配的最新版本，并固定 JAR 的校验和。
+
+| # | 实验 | 验证 |
+|---|---|---|
+| 4.1 | 创建 Delta 表（路径方式，`s3a://spark-data/delta/...`） | 用 Silo Console 或 `silo-export.sh` 查看 `_delta_log/*.json` 和 Parquet 文件 |
+| 4.2 | ACID 和事务日志 | 逐条解读每个 commit 中的 add 和 remove action |
+| 4.3 | Schema Enforcement / Evolution | 写入不兼容的 schema 时被拒绝；使用 `mergeSchema` |
+| 4.4 | MERGE / UPDATE / DELETE | 观察文件重写；开启 Deletion Vectors 后的变化 |
+| 4.5 | Time Travel、VACUUM、OPTIMIZE | `versionAsOf`；VACUUM 之后旧版本不可读 |
+| 4.6 | Optimistic Concurrency | 两个 Session 并发写入，观察冲突异常 |
+| 4.7 | 对象存储上的多写入方 | 需核实：Delta 在 S3 上多集群写入依赖 put-if-absent（或 DynamoDB LogStore），要先确认 Silo 是否支持条件写入 |
+
+### 14.5 Phase 5 — Catalog / Metadata
+
+| # | 实验 | 现在可做 | 说明 |
+|---|---|---|---|
+| 5.1 | Spark 内置 Hive 支持（内嵌 Derby） | 是 | 镜像中已有 `spark-hive_2.13-4.1.0`、`hive-metastore-2.3.10` 和 Derby。`enableHiveSupport()` 加上存放在 PVC 上的 Derby，用于学习 Managed 与 External 表、`LOCATION 's3a://…'`、`DESCRIBE EXTENDED` |
+| 5.2 | 独立 Hive Metastore 服务（PostgreSQL 存储） | 需核实 | 要核实 Hive 镜像的 arm64 支持，以及 Spark 4.1 内置的 2.3.10 客户端与 HMS 版本的兼容性（`spark.sql.hive.metastore.version` 和 jars）。这一步对应过去经验中"Hive Metastore 部署方式"这个未知项，但本实验结果不能反向证明 Yitu 当时的实现 |
+| 5.3 | Unity Catalog OSS | 需核实 | 开源版本（Apache 2.0），每个 Spark 小版本对应一个 connector `unitycatalog-spark_<spark>_2.13`（[UC 文档](https://unitycatalog.io/docs/how-to/configure-spark/)）。需要确认有 Spark 4.1 的构件，以及它与所选 Delta 版本的对应关系。社区反馈 Spark 4.2 上表访问有问题（[示例仓库](https://github.com/arindamchoudhury/spark-delta-unitycatalog)），我们使用 4.1，仍需实测 |
+| 5.4 | AWS Glue Data Catalog | 否 | 需要 AWS 账号和凭证，会产生费用，且无法在本地运行。建议只做概念对比；如果要实测，需要你提供账号并确认费用 |
+| 5.5 | 对比文档 | 是 | HMS、Glue 和 UC 在对象模型、权限和治理范围上的差异，以事实为准，不简单等同 |
+
+### 14.6 建议顺序与约束
+
+1. Phase 2.1（History Server）最先做，后面所有实验都会用到它。
+2. 然后做 Phase 2 的其余项，再按 3 → 4 → 5 的顺序推进，每个 Phase 都依赖前一个 Phase 的产出。
+3. 每完成一个 Phase，先提交验证证据和问题清单，确认之后再继续（§10 第 15 条）。
+4. 不引入 Airflow、Kafka 等范围外组件。Spark Operator 和 Spark Connect 都标为可选。
+
+---
+
+## 15. 多用户、资源归属与管理视图（方案，待批准，2026-11-22）
+
+### 15.1 参考平台的做法
+
+| 平台 | 管理员如何查看工作负载 | 如何归属到用户 | 来源 |
+|---|---|---|---|
+| Cloudera AI（CML） | Site Administration：概要统计、按团队和用户统计的 CPU、内存、运行数量时间序列，Sessions 列表可导出 CSV | 每个用户的工作负载运行在**各自的 Kubernetes namespace** 中；Sessions、Jobs 等元数据保存在内部 PostgreSQL（Pod 加 PV）；项目文件在 NFS 上 | [Monitoring](https://docs.cloudera.com/machine-learning/cloud/site-administration/topics/ml-monitoring.html)、[Architecture](https://docs.cloudera.com/machine-learning/cloud/architecture-overview/topics/ml-architecture-overview-cml.html)、[Spark on K8s](https://docs.cloudera.com/machine-learning/cloud/architecture-overview/topics/ml-architecture-overview-spark-on-kubernetes.html) |
+| Databricks | Compute 页面列出集群和创建者；Usage 和 Cost 页面；`system.compute.*`、`system.billing.usage` 系统表 | 自动为计算资源打 `Creator`、`ClusterId`、`JobId` 等默认 tag，并传播到云主机和用量记录；可以用 compute policy 强制要求 tag | [Usage tags](https://docs.databricks.com/aws/en/admin/account-settings/usage-detail-tags)、[Compute system tables](https://docs.databricks.com/gcp/en/admin/system-tables/compute) |
+
+两者有一个共同点：管理视图建在**平台自己的元数据**（数据库、tag 或 label）之上，而不是让管理员直接浏览 Pod。Databricks 的用户看到的是集群和作业，不是 Pod。
+
+### 15.2 Headlamp 的定位
+
+Headlamp 是 Kubernetes SIG UI 的项目，也是已归档的 Kubernetes Dashboard 的官方推荐替代（[Kubernetes Blog](https://kubernetes.io/blog/2026/06/01/dashboard-to-headlamp/)）。作为**通用 Kubernetes 运维 UI**，它是当前的最佳选择：可以查看 Pod、日志、Events、YAML，可以按 label 过滤。但它不知道"用户"和"Spark 应用"这些业务概念，只能显示 Pod 上已有的 label。它解决"看见 Pod"的问题，不解决"归属"的问题。归属要靠 §15.4 的 label。
+
+### 15.3 JupyterHub 用户管理评估（不依赖外部身份源）
+
+| Authenticator（hub 镜像中已有） | 自行注册 | 管理员审批 | 独立密码 | 结论 |
+|---|---|---|---|---|
+| DummyAuthenticator（当前） | 否 | 否 | 否，共享密码 | 不满足 |
+| SharedPasswordAuthenticator（JupyterHub 5 内置） | 否 | 否 | 否 | 不满足 |
+| FirstUseAuthenticator 1.1.1 | 首次登录时设置密码 | 否 | 是 | 缺少审批 |
+| TmpAuthenticator | 匿名 | 否 | 否 | 不满足 |
+| **NativeAuthenticator 1.3.0** | 是，`/hub/signup` | 是，`open_signup=False` 时管理员在 `/hub/authorize` 批准 | 是，密码以 bcrypt 哈希存放在 Hub 数据库；支持修改密码、最小长度、常见密码检查、登录失败锁定 | **满足全部要求** |
+
+JupyterHub 本身负责：`/hub/admin` 管理用户（管理员标记、启停或删除服务器），KubeSpawner 为每个用户创建 `jupyter-<user>` Pod 和 `claim-<user>` PVC，并给 Pod 打上 `hub.jupyter.org/username=<user>` label（已核实）。
+
+### 15.4 Spark 资源归属（已做原型验证）
+
+| 层次 | 做法 | 状态 |
+|---|---|---|
+| Notebook Pod | KubeSpawner 自动打 `hub.jupyter.org/username` | 已有 |
+| Driver 和 Executor Pod | `spark.kubernetes.driver.label.spark-lab/user=<user>` 和 `spark.kubernetes.executor.label.spark-lab/user=<user>` | 原型已验证：Cluster Mode 下 Driver 和 Executor 都带上了 `spark-lab/user` label |
+| Spark 应用 | 环境变量 `SPARK_USER=<user>`，Spark UI 和 REST API 显示 `sparkUser` | 原型已验证：`sparkUser: alice`；Driver 和 Executor 的环境变量中都有 `SPARK_USER=alice`。目前所有容器都以 `jovyan` 运行，不设置的话每个应用都显示 `jovyan` |
+| 自动注入 | Notebook 启动时为该用户生成 spark-defaults（带上述 label），并设置 `SPARK_USER` 环境变量。用户名来自 KubeSpawner 的 `{username}` 模板 | 待实施 |
+| 防伪造 | 上面的 label 是提交端自己声明的，用户可以覆盖。真正可信的归属需要每个用户一个 ServiceAccount，再配合 admission policy 校验或改写 label。CML 用 per-user namespace 达到同样效果 | 待评估（第二步） |
+
+多用户还需要修改的单用户假设：Client Mode 的 headless Service 只能对应一个 Driver（改为每个用户一个 Service，或使用 Pod IP 作为 `spark.driver.host`）；`/spark-ui/` 只指向一个 Notebook；Silo 使用共享的 root 密钥（改为每个用户一个 Silo 用户和对应策略）。
+
+### 15.5 作业状态的维护
+
+| 信息 | CML 的做法 | 本实验的现状 | 建议 |
+|---|---|---|---|
+| 用户和会话 | PostgreSQL | Hub 数据库（SQLite，PVC `hub-db-dir`）：用户、服务器、最近活动时间；NativeAuthenticator 的账号也在这里 | 多用户阶段把 Hub 数据库换成 PostgreSQL（Z2JH 支持 `hub.db.type: postgres`） |
+| 运行中的工作负载 | Kubernetes | Kubernetes：Pod 和 label | 管理视图直接从 Kubernetes API 按 label 读取 |
+| 作业历史和状态 | PostgreSQL | 没有持久记录：Completed 状态的 Driver Pod 会被清理，Events 约 1 小时后过期 | Spark History Server：event log 写入 `s3a://spark-logs/`，按应用保存状态、耗时、Executor 和 `sparkUser`（Phase 2.1） |
+| 作业定义和调度 | PostgreSQL 中的 Jobs | 无 | 可选：Spark Operator 的 `SparkApplication`，状态记录在 CR 的 status（etcd）中 |
+| 资源用量 | Usage 时间序列 | 无 | 后续可选：kube-state-metrics 加 Prometheus，按 `spark-lab/user` label 聚合 |
+| 用户文件 | NFS | 每个用户一个 PVC（local-path） | 单节点环境够用 |
+
+### 15.6 建议的实施顺序
+
+1. NativeAuthenticator：注册、审批，`spark` 设为管理员。
+2. 用户身份自动注入 Spark：label 加 `SPARK_USER`，并解决上面列出的单用户假设。
+3. Spark History Server（Phase 2.1）。
+4. 管理视图：Headlamp（只读），加上按用户汇总的 Portal 页面（Notebook、Driver、Executor）。
+5. 防伪造的归属（per-user ServiceAccount 或 namespace）和资源用量监控，单独评估。
 
 
 # task 2026-11-19
@@ -723,3 +1005,12 @@ Phase 1 成功的定义不是“Minikube 里安装了几个组件”，而是：
 Silo 保持首选。模板使用 Silo 的集群内 S3 Endpoint，并要求先手动确认版本、镜像 digest、许可证和凭证；Silo 当前是 PGSTY 维护的 S3-compatible MinIO 分支。Silo 项目
 
 下一步需要你的批准后，我才会开始“实施前环境核验”：只检查 Mac Studio 的 Docker/Minikube/Helm/kubectl 状态、CPU 架构、内存和磁盘，不下载或部署任何内容。
+
+# task 2026-11-22
+用户提出的改进及处理结果：
+1. 一键启停：`startcluster.sh` / `stopcluster.sh`；Traefik Ingress 在 8080 端口对外提供服务，不再使用 port-forward，局域网可访问（§13.2）。
+2. 统一入口 `portal/index.html`，包括 Spark UI（`/spark-ui/`、`/spark-driver/`）和 Silo Console（`/silo/`）。
+3. Silo 的 Web 界面、存储挂载链路，以及"能否在 Mac 上看到文件"：README §4。新增 `scripts/silo-export.sh`。
+4. `wordcount_local` 和 `wordcount_executor` 示例 Notebook 通过镜像和 init container 挂载到 `work/examples/`（README §3）。
+5. Phase 2–5 评估与计划：§14。
+6. Phase 1 验收状态：§7。还有一项未完成：GitHub Push，需要用户提供凭证。

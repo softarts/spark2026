@@ -1,31 +1,31 @@
-apiVersion: v1
-kind: ServiceAccount
+# Permissions a Spark driver needs inside ITS OWN user namespace (Client and
+# Cluster Mode): create/watch/delete Executor Pods, the Cluster-Mode Driver
+# Service and ConfigMaps. On SparkContext.stop(), Spark 4.1 removes its Pods,
+# Services, ConfigMaps and PVCs by label selector, which needs deletecollection.
+#
+# This is a ClusterRole, but it grants nothing on its own. The per-user
+# RoleBinding created by the Hub (jupyterhub/spark_lab_hook.py) scopes these
+# verbs to a single namespace user-<name>. A user's spark-runner therefore
+# cannot touch any other namespace.
+#
+# Deliberately excluded (see docs/spark_usermanagement_design.md §3.3):
+#   * secrets      - users must not read credentials
+#   * namespaces   - a RoleBinding granting "namespaces" would let the user edit
+#                    their own namespace object, including its Pod Security labels
+#   * create persistentvolumeclaims - on-demand executor PVCs are not used here
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
 metadata:
-  name: spark-client
-  namespace: spark-lab
+  name: spark-runner
   labels:
     app.kubernetes.io/part-of: spark-platform-learning-lab
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: spark-driver
-  namespace: spark-lab
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "services", "configmaps", "events"]
-    verbs: ["get", "list", "watch", "create", "delete", "patch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: spark-client-driver
-  namespace: spark-lab
-subjects:
-  - kind: ServiceAccount
-    name: spark-client
-    namespace: spark-lab
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: spark-driver
+    resources: ["pods", "pods/log", "services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection", "patch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]

@@ -1,39 +1,130 @@
-# Zero-to-JupyterHub Helm values for one local learning user.
-# REVIEW REQUIRED before install: replace image, tag/digest, storage class, and
-# PVC size. DummyAuthenticator is intentionally local-learning-only.
+# Zero-to-JupyterHub values for the Spark2026 multi-user lab (Docker Desktop
+# Kubernetes). Installed by startcluster.sh (chart jupyterhub/jupyterhub 4.4.5).
+#
+# Multi-user design: docs/spark_usermanagement_design.md
+#   * NativeAuthenticator: users self-register, admin `spark` approves.
+#   * Each user runs in namespace user-<name> (KubeSpawner.enable_user_namespaces,
+#     configured in jupyterhub/spark_lab_hook.py, passed via --set-file).
+#   * Pod Security "baseline" on each user namespace (labels set by the hook).
 hub:
   config:
     JupyterHub:
       admin_access: true
+      authenticator_class: nativeauthenticator.NativeAuthenticator
+    Authenticator:
+      # `spark` is the platform admin. NativeAuthenticator auto-authorizes a
+      # signup whose username is in admin_users, so startcluster.sh pre-registers
+      # `spark` before anyone else can claim the name.
+      admin_users:
+        - spark
+      # Authorization is enforced inside NativeAuthenticator.authenticate()
+      # (it returns None until an admin approves the signup). JupyterHub 5's
+      # separate check_allowed defaults to deny, so allow every user who gets
+      # past authenticate(); otherwise even approved users see "not allowed".
+      allow_all: true
+    NativeAuthenticator:
+      enable_signup: true
+      open_signup: false          # new users wait for admin approval at /hub/authorize
+      minimum_password_length: 8
   service:
+    type: ClusterIP
+  # jupyterhub/spark_lab_hook.py is appended here by startcluster.sh
+  # (helm --set-file hub.extraConfig.sparkLabMultiuser=...). It enables user
+  # namespaces and wires the provisioning hook and cleanup spawner.
+
+proxy:
+  service:
+    # Reached only through Traefik (k8s/50-ingress.yaml), never directly.
     type: ClusterIP
 
 singleuser:
   image:
-    name: REPLACE_NOTEBOOK_IMAGE_WITH_PINNED_ARM64_OR_MULTIARCH_DIGEST
-    tag: REPLACE_WITH_EMPTY_STRING_IF_IMAGE_IS_DIGEST_PINNED
+    # Built locally from images/Dockerfile by startcluster.sh.
+    # startcluster.sh overrides the tag with RUNTIME_TAG from scripts/lab.env.
+    name: spark-lab-runtime
+    tag: "0.3.0"
+    pullPolicy: Never
   defaultUrl: /lab
-  serviceAccountName: spark-client
-  extraLabels:
-    spark-lab/driver: interactive-client
+  # Per-user ServiceAccount, created in user-<name> by the pre_spawn_hook.
+  # Its token is mounted (service account set => KubeSpawner mounts it) so the
+  # Notebook can drive Spark on Kubernetes within its own namespace.
+  serviceAccountName: spark-runner
+  cloudMetadata:
+    # Z2JH's default metadata-blocker is a PRIVILEGED init container, which the
+    # Pod Security "baseline" level rejects. Docker Desktop has no cloud metadata
+    # endpoint (169.254.169.254), so disabling it loses no protection.
+    blockWithIptables: false
   storage:
     type: dynamic
-    capacity: REPLACE_NOTEBOOK_PVC_SIZE
+    capacity: 5Gi
+    homeMountPath: /home/jovyan
     dynamic:
-      storageClass: REPLACE_STORAGE_CLASS
+      storageClass: standard
+  # The local-path provisioner ignores fsGroup, so a fresh PVC is root-owned.
+  # This init container (root, same image) makes the home directory writable
+  # for UID 1000 and refreshes ~/work/examples from the image on every start.
+  # Running as root is allowed by the "baseline" level (only "restricted" forbids
+  # it). It gets its CPU/memory request from the namespace LimitRange.
+  initContainers:
+    - name: prepare-home
+      image: spark-lab-runtime:0.3.0
+      imagePullPolicy: Never
+      securityContext:
+        runAsUser: 0
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          mkdir -p /home/jovyan/work
+          rm -rf /home/jovyan/work/examples
+          cp -r /opt/spark-lab/examples /home/jovyan/work/examples
+          chown 1000:1000 /home/jovyan /home/jovyan/work
+          chown -R 1000:1000 /home/jovyan/work/examples
+          echo "examples refreshed: $(ls /home/jovyan/work/examples/*)"
+      volumeMounts:
+        - name: volume-{user_server}
+          mountPath: /home/jovyan
   extraEnv:
-    SPARK_LAB_NAMESPACE: spark-lab
-    SPARK_LAB_DRIVER_SERVICE: spark-client-driver.spark-lab.svc
+    # {username} is expanded by KubeSpawner per user.
+    SPARK_USER: "{username}"
+    SPARK_LAB_NAMESPACE: "user-{username}"
+    SPARK_LAB_RUNTIME_IMAGE: spark-lab-runtime:0.3.0
+    SILO_ENDPOINT: http://silo.spark-lab.svc:9000
+    # Shared NON-root Silo credentials, copied into user-<name> by the hook.
+    SILO_ACCESS_KEY:
+      valueFrom:
+        secretKeyRef:
+          name: silo-shared-credentials
+          key: accessKey
+    SILO_SECRET_KEY:
+      valueFrom:
+        secretKeyRef:
+          name: silo-shared-credentials
+          key: secretKey
   cpu:
-    guarantee: REPLACE_NOTEBOOK_CPU_REQUEST
-    limit: REPLACE_NOTEBOOK_CPU_LIMIT
+    guarantee: 1
+    limit: 2
   memory:
-    guarantee: REPLACE_NOTEBOOK_MEMORY_REQUEST
-    limit: REPLACE_NOTEBOOK_MEMORY_LIMIT
+    guarantee: 2G
+    limit: 3G
+  uid: 1000
+  fsGid: 1000
+  networkPolicy:
+    enabled: false
 
-proxy:
-  service:
-    type: ClusterIP
+# Single node, locally built images (pullPolicy: Never): pre-pulling images and
+# the bin-packing user-scheduler add Pods without any benefit here.
+prePuller:
+  hook:
+    enabled: false
+  continuous:
+    enabled: false
+scheduling:
+  userScheduler:
+    enabled: false
+  userPlaceholder:
+    enabled: false
 
 cull:
   enabled: false

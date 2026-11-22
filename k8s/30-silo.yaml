@@ -1,8 +1,6 @@
-# REVIEW REQUIRED before apply:
-# - Replace REPLACE_SILO_IMAGE_WITH_PINNED_ARM64_OR_MULTIARCH_DIGEST.
-# - Create the silo-root-credentials Secret from the example locally; do not
-#   commit real credentials.
-# - Confirm storageClassName and PVC size for the selected Minikube profile.
+# Docker Desktop Kubernetes baseline. The image is a reviewed, immutable
+# multi-architecture digest. Create silo-root-credentials locally; never commit
+# real credentials.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -10,10 +8,10 @@ metadata:
   namespace: spark-lab
 spec:
   accessModes: ["ReadWriteOnce"]
-  storageClassName: REPLACE_STORAGE_CLASS
+  storageClassName: standard
   resources:
     requests:
-      storage: REPLACE_STORAGE_SIZE
+      storage: 5Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -38,7 +36,8 @@ spec:
         fsGroup: 1000
       containers:
         - name: silo
-          image: REPLACE_SILO_IMAGE_WITH_PINNED_ARM64_OR_MULTIARCH_DIGEST
+          image: pgsty/silo@sha256:c20d112390b9a9ce8c11b8af95ad35bcaa62f4759663c09c936cd8d2b511f329
+          imagePullPolicy: IfNotPresent
           args: ["server", "/data", "--console-address", ":9001"]
           ports:
             - name: s3
@@ -56,6 +55,11 @@ spec:
                 secretKeyRef:
                   name: silo-root-credentials
                   key: secretKey
+            # The Web Console is served behind Traefik at /silo/. The Console
+            # derives its sub-path from this URL; the host part is not checked,
+            # so the Console also works via http://<mac-lan-ip>:8080/silo/.
+            - name: MINIO_BROWSER_REDIRECT_URL
+              value: http://localhost:8080/silo
           volumeMounts:
             - name: data
               mountPath: /data

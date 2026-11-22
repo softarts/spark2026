@@ -1,0 +1,62 @@
+# Traefik Helm values: the lab's single external entry point.
+# Chart traefik/traefik 42.4.1 (Traefik Proxy v3.7.19), pinned in scripts/lab.env.
+#
+# Why Traefik: the community ingress-nginx controller was retired in March 2026
+# (no further releases or security fixes). Traefik supports the standard
+# Kubernetes Ingress API and Gateway API, and is a single Helm release.
+#
+# Docker Desktop Kubernetes publishes LoadBalancer Services on every host
+# interface (*:port), so http://<mac-ip>:8080 is reachable from other machines.
+image:
+  tag: v3.7.19
+
+deployment:
+  replicas: 1
+
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+  name: traefik
+
+providers:
+  kubernetesCRD:
+    # Needed for Middleware objects (stripPrefix / headers) used by k8s/50-ingress.yaml.
+    enabled: true
+  kubernetesIngress:
+    enabled: true
+    # Standard Ingress "Prefix" semantics: /user matches /user/... but not /username.
+    strictPrefixMatching: true
+  kubernetesGateway:
+    enabled: false
+
+gateway:
+  enabled: false
+gatewayClass:
+  enabled: false
+
+ports:
+  web:
+    # Container listens on 8000; the LoadBalancer Service exposes 8080 on the Mac.
+    port: 8000
+    exposedPort: 8080
+    http:
+      encodedCharacters:
+        # JupyterLab and the Spark UI REST API can send %2F / %25 in paths.
+        allowEncodedSlash: true
+        allowEncodedPercent: true
+  websecure:
+    # No TLS in this personal lab; do not publish 443 on the Mac.
+    expose:
+      default: false
+
+service:
+  spec:
+    type: LoadBalancer
+
+# Access logs are disabled by default in chart 42.x.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
