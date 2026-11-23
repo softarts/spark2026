@@ -33,6 +33,9 @@ if [ "$PURGE" -eq 1 ]; then
   [ "$answer" = "$LAB_NAMESPACE" ] || die "aborted"
   hm uninstall jupyterhub -n "$LAB_NAMESPACE" --wait >/dev/null 2>&1 || true
   hm uninstall traefik -n "$INGRESS_NAMESPACE" --wait >/dev/null 2>&1 || true
+  hm uninstall headlamp -n "$HEADLAMP_NAMESPACE" --wait >/dev/null 2>&1 || true
+  kc delete clusterrolebinding headlamp-viewer --ignore-not-found >/dev/null 2>&1 || true
+  kc delete namespace "$HEADLAMP_NAMESPACE" --ignore-not-found --wait=true >/dev/null 2>&1 || true
   # Per-user namespaces (each carries label spark-lab/tenant=true).
   kc delete namespace -l spark-lab/tenant=true --ignore-not-found --wait=true >/dev/null 2>&1 || true
   kc delete namespace "$LAB_NAMESPACE" "$INGRESS_NAMESPACE" --ignore-not-found --wait=true
@@ -49,6 +52,7 @@ done
 log "Scaling lab Deployments to 0"
 kc -n "$LAB_NAMESPACE" scale deployment --all --replicas=0 >/dev/null
 kc -n "$INGRESS_NAMESPACE" scale deployment --all --replicas=0 >/dev/null 2>&1 || true
+kc -n "$HEADLAMP_NAMESPACE" scale deployment --all --replicas=0 >/dev/null 2>&1 || true
 
 kc -n "$LAB_NAMESPACE" wait --for=delete pod --all --timeout=120s >/dev/null 2>&1 || true
 kc -n "$INGRESS_NAMESPACE" wait --for=delete pod --all --timeout=60s >/dev/null 2>&1 || true

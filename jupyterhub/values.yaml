@@ -117,6 +117,18 @@ singleuser:
         secretKeyRef:
           name: silo-shared-credentials
           key: secretKey
+    # Same credentials under the AWS SDK names: images/spark-defaults.conf uses
+    # the environment credential provider for S3A defaults and the event log.
+    AWS_ACCESS_KEY_ID:
+      valueFrom:
+        secretKeyRef:
+          name: silo-shared-credentials
+          key: accessKey
+    AWS_SECRET_ACCESS_KEY:
+      valueFrom:
+        secretKeyRef:
+          name: silo-shared-credentials
+          key: secretKey
   cpu:
     guarantee: 1
     limit: 2

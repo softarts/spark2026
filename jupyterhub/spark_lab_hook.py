@@ -14,8 +14,13 @@
 #     ResourceQuota and a LimitRange. The namespace itself carries the Pod
 #     Security "baseline" labels so a user cannot launch a privileged / hostPath
 #     Pod (the escalation path analysed in the design doc).
-#   * delete_forever() removes the whole namespace and the user's Silo objects.
+#   * delete_forever() removes the whole namespace, the user's Silo objects
+#     (s3a://spark-data/users/<name>/) and the user's Spark event logs.
+import json
+import re
+
 from kubernetes_asyncio import client, config as k8s_config
+from tornado.httpclient import AsyncHTTPClient
 from kubespawner import KubeSpawner
 
 PLATFORM_NS = "spark-lab"
@@ -23,6 +28,12 @@ POLICY_VERSION = "v1.36"            # pin PSA policy version (see design doc §5
 SILO_SHARED_SECRET = "silo-shared-credentials"
 SPARK_RUNNER_SA = "spark-runner"
 SPARK_RUNNER_CLUSTERROLE = "spark-runner"
+# Same image digest as k8s/30-silo.yaml; it bundles the mcli client.
+SILO_IMAGE = "pgsty/silo@sha256:c20d112390b9a9ce8c11b8af95ad35bcaa62f4759663c09c936cd8d2b511f329"
+HISTORY_API = "http://spark-history.spark-lab.svc.cluster.local:18080/api/v1/applications?limit=100000"
+EVENT_LOG_PREFIX = "local/spark-data/spark-logs"
+# Spark application IDs look like local-1795445427420 or spark-<32 hex>.
+_APP_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # Labels put on every user namespace. Pod Security "baseline" is enforced;
 # "restricted" is only warned/audited (the Notebook and Spark pods run as root
@@ -171,28 +182,58 @@ async def _cleanup_user(username: str, log):
             if exc.status != 404:
                 raise
 
-        # Delete the user's Silo objects with a one-shot mcli pod in the platform
-        # namespace (the Hub image has no S3 client). Best-effort.
+        # Delete the user's Silo objects and event logs with a one-shot mcli pod
+        # in the platform namespace (the Hub image has no S3 client). Best-effort.
         try:
-            await _run_silo_cleanup(core, username, log)
+            app_ids = await _user_app_ids(username, log)
+            await _run_silo_cleanup(core, username, app_ids, log)
         except Exception as exc:  # noqa: BLE001 - cleanup must not block deletion
             log.warning("spark-lab: Silo cleanup for %s failed: %s", username, exc)
 
 
-async def _run_silo_cleanup(core, username: str, log):
+async def _user_app_ids(username: str, log) -> list:
+    """Application IDs whose sparkUser is this user, from the History Server.
+
+    Event log names contain only the application ID, so the History Server's
+    listing is the only place that maps logs to users. sparkUser comes from
+    SPARK_USER, which the platform sets but a user can override (accepted).
+    """
+    try:
+        resp = await AsyncHTTPClient().fetch(HISTORY_API, request_timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("spark-lab: History Server unavailable, event logs of %s kept: %s",
+                    username, exc)
+        return []
+    ids = []
+    for app in json.loads(resp.body):
+        if any(a.get("sparkUser") == username for a in app.get("attempts", [])):
+            if _APP_ID.match(app.get("id", "")):
+                ids.append(app["id"])
+    log.info("spark-lab: %d event log(s) to delete for %s", len(ids), username)
+    return ids
+
+
+async def _run_silo_cleanup(core, username: str, app_ids: list, log):
     pod_name = f"silo-cleanup-{username}"
-    cmd = (
+    steps = [
         'export MC_HOST_local="http://$SILO_ACCESS_KEY:$SILO_SECRET_KEY@'
-        'silo.spark-lab.svc:9000"; '
-        f'mcli rm --recursive --force "local/spark-data/users/{username}/" || true'
-    )
+        'silo.spark-lab.svc:9000"',
+        f'mcli rm --recursive --force "local/spark-data/users/{username}/" || true',
+    ]
+    # Spark 4.1 writes rolling event logs as a directory eventlog_v2_<appId>/;
+    # also remove single-file logs (<appId>, <appId>.zstd, *.inprogress).
+    for app_id in app_ids:
+        steps.append(f'mcli rm --recursive --force "{EVENT_LOG_PREFIX}/eventlog_v2_{app_id}/" || true')
+        for suffix in ("", ".zstd", ".inprogress", ".zstd.inprogress"):
+            steps.append(f'mcli rm --force "{EVENT_LOG_PREFIX}/{app_id}{suffix}" >/dev/null 2>&1 || true')
+    cmd = "; ".join(steps)
     pod = client.V1Pod(
         metadata=client.V1ObjectMeta(name=pod_name, namespace=PLATFORM_NS),
         spec=client.V1PodSpec(
             restart_policy="Never",
             containers=[client.V1Container(
                 name="mcli",
-                image="pgsty/silo",
+                image=SILO_IMAGE,
                 image_pull_policy="IfNotPresent",
                 command=["sh", "-c", cmd],
                 env=[
@@ -222,6 +263,31 @@ def spark_lab_pre_spawn_hook(spawner):
 
 class SparkLabSpawner(KubeSpawner):
     """KubeSpawner that also tears down the user's namespace and Silo data."""
+
+    def load_state(self, state):
+        # KubeSpawner persists the namespace in the Hub database and restores
+        # it on every start, overriding user_namespace_template. A user created
+        # before per-user namespaces (e.g. the admin `spark`, saved with
+        # namespace spark-lab) would then be spawned outside user-<name>.
+        # The namespace is the ownership boundary, so it must always be derived
+        # from the user name. If the saved namespace differs, discard the whole
+        # saved state: pod_name, dns_name and pvc_name all refer to objects in
+        # the old namespace (a saved pvc_name also makes KubeSpawner skip
+        # creating the PVC, leaving the new Pod Pending). The templates then
+        # regenerate the names in user-<name>, as for a brand-new user.
+        expected = f"user-{self.user.name}"
+        saved = state.get("namespace")
+        if saved and saved != expected:
+            self.log.warning(
+                "spark-lab: discarding saved spawner state of %s (namespace %s); using %s",
+                self.user.name, saved, expected)
+            state = {}
+        # A saved pvc_name makes KubeSpawner assume the PVC exists and skip
+        # creating it. Our PVC name is fixed by the template (claim-<user>), so
+        # never trust the saved one: KubeSpawner then (re)creates the PVC if it
+        # is missing and treats "already exists" as success.
+        state = {k: v for k, v in state.items() if k != "pvc_name"}
+        super().load_state(state)
 
     async def delete_forever(self):
         await _cleanup_user(self.user.name, self.log)

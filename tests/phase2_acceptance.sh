@@ -67,8 +67,10 @@ in_nb alice '/opt/spark/bin/spark-submit --master k8s://https://kubernetes.defau
   --conf spark.kubernetes.executor.request.cores=500m --conf spark.kubernetes.driver.request.cores=500m \
   --conf spark.kubernetes.submission.waitAppCompletion=false \
   local:///opt/spark-lab/examples/jobs/wordcount.py' > /tmp/p2-23-submit.txt 2>&1
+# Wait until the Driver UI answers "/" with its redirect: right after start
+# the REST API may already answer while "/" still says "Spark is starting up".
 for i in $(seq 1 60); do
-  [ "$(curl -s -o /dev/null -w '%{http_code}' "$B/spark-driver/alice/api/v1/applications")" = 200 ] && break; sleep 2
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$B/spark-driver/alice/")" = 302 ] && break; sleep 2
 done
 D=$($KC -n user-alice get pods -l spark-role=driver --sort-by=.metadata.creationTimestamp -o name | tail -1)
 dsa=$($KC -n user-alice get "$D" -o jsonpath='{.spec.serviceAccountName}')
@@ -78,7 +80,11 @@ links=$(curl -sL "$B/spark-driver/alice/" | grep -o 'href="/spark-driver/alice/[
 echo "    driver=$D sa=$dsa executors-now=$nex"
 echo "    /spark-driver/alice/ -> $redir ; links: $links"
 [ "$dsa" = spark-runner ] && [ "$nex" -ge 1 ] && pass "2.3 Driver + Executors in user-alice, Driver SA spark-runner" || fail "2.3"
-case "$redir" in */spark-driver/alice/jobs/) pass "2.5 /spark-driver/alice/ redirect keeps prefix";; *) fail "2.5 driver redirect: $redir";; esac
+case "$redir" in
+  */spark-driver/alice/jobs/) pass "2.5 /spark-driver/alice/ redirect keeps prefix";;
+  *) fail "2.5 driver redirect: [$redir] last root=$(curl -s -o /tmp/p2-root.html -w '%{http_code}' "$B/spark-driver/alice/") $(head -c 80 /tmp/p2-root.html | tr '\n' ' ')"
+     $KC -n user-alice get pods -l spark-role=driver --no-headers;;
+esac
 for i in $(seq 1 60); do
   ph=$($KC -n user-alice get "$D" -o jsonpath='{.status.phase}'); [ "$ph" = Succeeded ] || [ "$ph" = Failed ] && break; sleep 2
 done

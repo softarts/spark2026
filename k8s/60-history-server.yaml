@@ -1,0 +1,70 @@
+# Spark History Server at http://<host>:8080/history/ (route in k8s/50-ingress.yaml).
+# Same runtime image as Notebooks and Spark Pods. It reads the event logs that
+# every application writes to s3a://spark-data/spark-logs/ (see
+# images/spark-defaults.conf), using the shared non-root Silo user.
+#
+# Shared by all users and not authenticated (accepted, like the live Spark UI;
+# docs/spark_usermanagement_design.md §2).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-history
+  namespace: spark-lab
+  labels:
+    app.kubernetes.io/name: spark-history
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spark-history
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spark-history
+        app.kubernetes.io/part-of: spark-platform-learning-lab
+    spec:
+      automountServiceAccountToken: false   # needs no Kubernetes API access
+      containers:
+        - name: history-server
+          image: spark-lab-runtime:0.3.0      # tag overridden by startcluster.sh
+          imagePullPolicy: Never
+          command: ["/opt/spark/sbin/start-history-server.sh"]
+          env:
+            - name: SPARK_NO_DAEMONIZE        # stay in the foreground
+              value: "1"
+            - name: SPARK_HISTORY_OPTS
+              value: >-
+                -Dspark.history.fs.logDirectory=s3a://spark-data/spark-logs/
+                -Dspark.history.fs.update.interval=10s
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: {name: silo-shared-credentials, key: accessKey}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: silo-shared-credentials, key: secretKey}
+          ports:
+            - name: http
+              containerPort: 18080
+          readinessProbe:
+            httpGet: {path: /api/v1/version, port: http}
+            initialDelaySeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 768Mi}
+            limits: {memory: 1536Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-history
+  namespace: spark-lab
+  labels:
+    app.kubernetes.io/name: spark-history
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+spec:
+  selector:
+    app.kubernetes.io/name: spark-history
+  ports:
+    - name: http
+      port: 18080
+      targetPort: http

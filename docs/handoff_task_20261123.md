@@ -1,8 +1,8 @@
 # Handoff：Spark2026 多用户改造（2026-11-23）
 
 **用途：** 下一次会话从这里继续。先读本文件，再读 `docs/spark_usermanagement_design.md`（已批准的设计与验收标准）。
-**当前位置（2026-11-23 更新）：** 多用户改造 **Phase 1、Phase 2 都已完成并通过验收**（Phase 2：13/13，见设计文档 §7 "Phase 2 实施结果"）。**Phase 3 尚未开始，等待用户确认。**
-**Git：** Phase 1 已由用户提交为 `b4a6860 phase1`。**Phase 2 的改动尚未提交。**
+**当前位置（2026-11-23 更新）：** 多用户改造 **Phase 1、2、3 全部完成并通过验收**（Phase 2：13/13，Phase 3：14/14，见设计文档 §7）。`README.md`、`solution_design.md` §16 已更新为多用户版本。剩下的只有 Phase 4（可选的后续增强），未经用户要求不要开始。
+**Git：** `b4a6860 phase1`、`56aa9d0 phase2` 已由用户提交。**Phase 3 的改动尚未提交。**
 
 ---
 
@@ -72,15 +72,19 @@ Phase 2 中发现的要点：
 
 **仍未更新（文档类，计划在 Phase 3 之后统一做）：** `README.md`（仍是单用户、DummyAuthenticator、`spark-client`、`/spark-ui/` 的旧说明）和 `solution_design.md`。
 
-## 5. 下一步：Phase 3（待用户确认后开始）
+## 5. Phase 3 完成情况与后续
 
-设计见 `docs/spark_usermanagement_design.md` §7 Phase 3：
+- History Server：`/history/`，`k8s/60-history-server.yaml`；所有应用的 event log 写到 `s3a://spark-data/spark-logs/`（`images/spark-defaults.conf`）。
+- Headlamp：`/headlamp/`，仅管理员，登录 token 用 `scripts/headlamp-token.sh` 生成（只读 `view`，不含 Secret）。
+- 删除用户时同时删除该用户的 event log（Hub 通过 History Server REST API 按 `sparkUser` 查找）。
+- Portal 增加了 History Server、Headlamp 卡片。
+- 验收：`tests/phase3_acceptance.sh [--cleanup]`；回归：`tests/phase2_acceptance.sh --cleanup`。
 
-1. Spark History Server：同一运行时镜像，在 `spark-lab` 运行，读 `s3a://spark-data/spark-logs/`（用 `lab-user` 凭证），路由 `/history/`，所有用户共享、不鉴权。需要在 `images/spark-defaults.conf` 或示例中开启 `spark.eventLog.enabled=true`、`spark.eventLog.dir=s3a://spark-data/spark-logs/`，并给 event log 写入配好 S3A 凭证。先实测 History Server 是否扫描子目录。
-2. 删除用户时清理该用户的 event log（经 History Server REST API 按 `sparkUser` 找应用 ID，设计 §3.7）。
-3. Headlamp：仅管理员，绑定内置 `view` ClusterRole，路由 `/headlamp/`，`startcluster.sh` 打印限时 token。
-4. Portal 增加 History Server、Headlamp 入口。
-5. 之后统一更新 `README.md`、`solution_design.md`。
+Phase 4（可选，未开始）：每用户 Silo 凭证与策略、Spark UI 鉴权（jupyter-server-proxy）、限制 Hub 权限的 ValidatingAdmissionPolicy、TLS、资源用量统计。NetworkPolicy 在本环境无效（kindnet 不执行），如需要得先换 CNI。
+
+Phase 3 之后修复：管理员 `spark`（单用户时代的旧账号）启动 Notebook 失败，原因是 Hub 数据库中保存的旧 Spawner 状态（namespace `spark-lab`、`pvc_name`）。`SparkLabSpawner.load_state` 已处理，详见设计文档 §7 "Phase 3 之后发现的问题"。新用户不受影响。
+
+已知的小问题：Phase 2 验收的 2.5（Cluster Mode Driver UI 跳转）曾两次在连续删建用户后失败，单独复现和之后的三次完整运行都通过；测试已加诊断输出，如再失败会打印最后的状态码和 Driver Pod 状态。
 
 ## 6. 环境与运维速查
 
@@ -90,11 +94,12 @@ Phase 2 中发现的要点：
 | 管理员 | `spark`，密码在 `.lab/credentials.env` 的 `JUPYTER_PASSWORD`（git-ignored） |
 | Silo root | `.lab/credentials.env` 的 `SILO_ACCESS_KEY`/`SILO_SECRET_KEY`（仅 Console 管理员与脚本用） |
 | Silo 共享用户 | `lab-user`，`.lab/credentials.env` 的 `SILO_SHARED_*`，集群内 `spark-lab/silo-shared-credentials` |
-| 当前集群状态 | `spark-lab`：hub、proxy、silo、portal 运行中；`traefik` 运行中；没有 `user-*` namespace（测试用户 alice/bob 已由 `--cleanup` 删除）；NativeAuthenticator 中只有 `spark`；Silo 中只有 `shared/wordcount/sample.txt` 和单用户时代留下的旧对象（`input/`、`run-*`、`notebook-demo/`、`cluster-wordcount/`，未删除） |
+| 当前集群状态 | `spark-lab`：hub、proxy、silo、portal 运行中；`traefik` 运行中；只有管理员的 `user-spark` namespace（测试用户 alice/bob 已由 `--cleanup` 删除）；NativeAuthenticator 中只有 `spark`；Silo 中只有 `shared/wordcount/sample.txt` 和单用户时代留下的旧对象（`input/`、`run-*`、`notebook-demo/`、`cluster-wordcount/`，未删除） |
 | 用户 namespace 批量清理 | `kubectl delete ns -l spark-lab/tenant=true` |
 | 镜像导入节点 | `startcluster.sh` 用临时特权 Pod `kube-system/spark-lab-image-loader` 执行 `ctr images import`（kind 模式节点有独立 containerd） |
 | Hub 日志 | `kubectl -n spark-lab logs deploy/hub`（hook 日志前缀 `spark-lab:`） |
+| History Server / Headlamp | `kubectl -n spark-lab logs deploy/spark-history` / `kubectl -n headlamp logs deploy/headlamp` |
 
 ## 7. 回滚（如需要）
 
-Phase 1 的回滚点是 `b4a6860 phase1`。建议在开始 Phase 3 之前把 Phase 2 的改动也提交一次。回滚步骤见 `docs/spark_usermanagement_design.md` §8。
+回滚点：`b4a6860 phase1`、`56aa9d0 phase2`。建议把 Phase 3 的改动也提交一次。回滚步骤见 `docs/spark_usermanagement_design.md` §8。

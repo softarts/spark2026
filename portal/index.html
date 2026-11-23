@@ -64,6 +64,24 @@
 
   <div class="card">
     <div>
+      <h2><a href="/history/">Spark History Server</a></h2>
+      <p>已结束（以及正在运行）的 Spark 应用：每个应用的 Driver 把 event log 写到 Silo 的 <code>spark-data/spark-logs/</code>，History Server 据此重建 Spark UI。</p>
+      <p>"Spark User" 列就是 JupyterHub 用户名。所有用户共享，不鉴权。新完成的应用约 10 秒后出现。</p>
+    </div>
+    <span class="status" data-check="/history/api/v1/version">…</span>
+  </div>
+
+  <div class="card">
+    <div>
+      <h2><a href="/headlamp/">Headlamp — Kubernetes 管理视图（仅管理员）</a></h2>
+      <p>按命名空间查看每个用户的 Notebook、Driver、Executor Pod 及其日志和事件：<code>user-&lt;用户名&gt;</code> 就是该用户的资源。</p>
+      <p>登录需要只读 token，只有平台管理员能在 Mac 上生成：<code>scripts/headlamp-token.sh</code>。</p>
+    </div>
+    <span class="status" data-check="/headlamp/">…</span>
+  </div>
+
+  <div class="card">
+    <div>
       <h2><a href="/silo/">Silo Object Storage Console</a></h2>
       <p>S3-compatible 对象存储（PGSTY 维护的 MinIO 社区分支）的 Web 控制台：浏览 Bucket、预览和下载对象。</p>
       <p>Console 登录使用 Silo 管理员密钥（只有平台管理员持有，<code>.lab/credentials.env</code>）。Notebook 中使用的是所有用户共享的非 root 用户 <code>lab-user</code>。集群内 S3 Endpoint：<code>http://silo.spark-lab.svc:9000</code>。</p>

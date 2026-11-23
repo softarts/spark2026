@@ -3,7 +3,7 @@
 **文档类型：** Solution Design / Implementation Brief  
 **目标读者：** 后续负责实现本实验环境的 AI Agent 或工程师  
 **当前范围：** Phase 1 — Interactive Spark Development Environment  
-**文档状态：** Phase 1 已实现并验证（2026-11-22），实现记录见 §13，后续阶段计划见 §14  
+**文档状态：** Phase 1 已实现并验证（2026-11-22），实现记录见 §13，后续阶段计划见 §14；多用户改造已实现并验证（2026-11-23），见 §16  
 **核心目标：** 恢复并升级已有 Apache Spark / PySpark 平台经验，理解现代 Spark 交互式开发平台与分布式执行机制。
 
 ---
@@ -731,6 +731,8 @@ Phase 1 成功的定义不是“Kubernetes 里安装了几个组件”，而是�
 
 本节记录 Phase 1 的实际实现、与原设计的偏差，以及实验结论。操作说明见 README.md。
 
+> **注意（2026-11-23）：** 本节描述的是单用户版本（DummyAuthenticator、Notebook Pod `jupyter-spark` 和 ServiceAccount `spark-client` 都在 `spark-lab` 中，Client Mode 用 headless Service `spark-client-driver`）。这些已被多用户改造取代，见 §16。§13.6 中关于 Notebook、Driver、Executor 关系的实验结论仍然成立，只是命名空间和 ServiceAccount 换成了 `user-<用户名>` 和 `spark-runner`。
+
 ### 13.1 平台偏差：Docker Desktop Kubernetes 替代 Minikube
 
 | 项目 | 结论 |
@@ -928,7 +930,7 @@ jupyter-spark Pod: spark-submit (客户端，等待作业结束后退出)
 
 ---
 
-## 15. 多用户、资源归属与管理视图（方案，待批准，2026-11-22）
+## 15. 多用户、资源归属与管理视图（2026-11-22 调研；已实施，见 §16）
 
 ### 15.1 参考平台的做法
 
@@ -985,6 +987,44 @@ JupyterHub 本身负责：`/hub/admin` 管理用户（管理员标记、启停�
 3. Spark History Server（Phase 2.1）。
 4. 管理视图：Headlamp（只读），加上按用户汇总的 Portal 页面（Notebook、Driver、Executor）。
 5. 防伪造的归属（per-user ServiceAccount 或 namespace）和资源用量监控，单独评估。
+
+---
+
+## 16. 多用户改造实施记录（2026-11-23）
+
+完整设计、安全分析和逐项验收证据见 [docs/spark_usermanagement_design.md](docs/spark_usermanagement_design.md)，操作说明见 README.md §2–§5。本节只记录结论。
+
+### 16.1 实现
+
+| 方面 | 实现 |
+|---|---|
+| 认证 | JupyterHub NativeAuthenticator：`/hub/signup` 注册，管理员 `spark` 在 `/hub/authorize` 批准；`spark` 由 `startcluster.sh` 预先注册（防止抢注） |
+| 资源归属 | 每用户一个命名空间 `user-<用户名>`：Notebook、Driver、Executor 都在其中；命名空间即归属，由 RBAC 保证 |
+| 命名空间初始化 | Hub 的 `pre_spawn_hook`（`jupyterhub/spark_lab_hook.py`）：ServiceAccount `spark-runner` + RoleBinding、共享 Silo Secret、Spark UI Service、ResourceQuota、LimitRange；不是业界最佳实践（最佳实践是 Kubeflow Profiles、Kyverno 这类声明式控制器），但不引入新组件 |
+| 权限 | `spark-runner` 只在自己的命名空间操作 Pod、Service、ConfigMap，不能读 Secret，不能改命名空间；Pod Security `baseline` 防止通过特权 Pod 提权 |
+| Spark | Client Mode：`spark.driver.host` = Pod IP（Downward API），随机端口，一个 Pod 可有多个 Driver；Cluster Mode：Driver 在用户命名空间，SA `spark-runner` |
+| Spark UI | Portal nginx 按用户转发 `/spark-ui/<用户名>/`、`/spark-driver/<用户名>/`，不鉴权 |
+| 作业历史 | Spark History Server（`/history/`），所有应用的 event log 写到 `s3a://spark-data/spark-logs/`；Spark User = JupyterHub 用户名 |
+| 管理视图 | Headlamp（`/headlamp/`），只读 token 由管理员在 Mac 上生成；按命名空间查看每个用户的 Pod |
+| 对象存储 | 共享非 root 用户 `lab-user`（只能访问 `spark-data`）；root 凭证不进入任何用户 Pod |
+| 删除用户 | 删除命名空间、`users/<用户名>/`、该用户的 event log 和账号记录 |
+
+### 16.2 验收
+
+| 阶段 | 结果 | 内容 |
+|---|---|---|
+| 用户管理 Phase 1 | 9/9 | 注册与审批、命名空间与身份、跨命名空间访问被拒、不能读 Secret、Pod Security 拒绝特权 / hostPath / host 命名空间 / hostPort / SYS_ADMIN、删除用户 |
+| 用户管理 Phase 2 | 13/13（`tests/phase2_acceptance.sh`） | 两个用户同时运行 Client Mode、同一 Pod 多 Driver、Cluster Mode + S3A、提交到他人命名空间被 403、按用户的 Spark UI、Spark hostPath 参数被 Pod Security 拒绝 |
+| 用户管理 Phase 3 | 14/14（`tests/phase3_acceptance.sh`） | History Server 按用户列出三种模式的应用、`/history/` 下应用 UI 可用、Headlamp 只读且不带 token 被拒、删除用户时只删除本人的 event log |
+
+### 16.3 对 §12 问题的补充
+
+- **平台如何知道一个 Pod 属于谁？** 在本实验中靠命名空间：用户的 token 只能在 `user-<用户名>` 中创建 Pod，因此该命名空间中的 Pod 必然由该用户（或代表该用户的 Hub）创建。`SPARK_USER` 和 label 只用于展示，用户可以改。这与 CML 的"每用户一个命名空间"一致；Databricks 则在平台层给计算资源打 `Creator` 标签。
+- **RBAC 是否足以隔离用户？** 不够。能创建 Pod 的用户可以在 Pod 规格中申请特权或挂载节点目录，在单节点集群上可直接拿到 cluster-admin（已用 server-side dry-run 证实）。必须配合准入控制（本实验用 Pod Security baseline）。
+
+### 16.4 未做（接受的风险或后续）
+
+每用户 Silo 凭证、NetworkPolicy（kindnet 不执行）、Spark UI 鉴权、TLS、限制 Hub 权限的准入策略、资源用量统计。
 
 
 # task 2026-11-19

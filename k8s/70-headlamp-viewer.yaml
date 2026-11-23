@@ -1,0 +1,26 @@
+# Read-only identity for the platform admin's Headlamp login.
+# Bound to the built-in aggregated ClusterRole "view": get/list/watch on
+# workloads, Pods, Pod logs, Services, Events, Namespaces... but NOT Secrets.
+# Issue a short-lived login token with scripts/headlamp-token.sh.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: headlamp-viewer
+  namespace: headlamp
+  labels:
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: headlamp-viewer
+  labels:
+    app.kubernetes.io/part-of: spark-platform-learning-lab
+subjects:
+  - kind: ServiceAccount
+    name: headlamp-viewer
+    namespace: headlamp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view

@@ -128,11 +128,23 @@ the silo console shows every object spark wrote
 spark spark silo
 TXT
 
+# Event log directory for the History Server. Spark refuses to start when the
+# log directory does not exist, and on S3 an empty prefix is not a directory,
+# so keep a marker object in it.
+kc -n "$LAB_NAMESPACE" exec deploy/silo -- sh -c \
+  'echo "Spark event logs; see images/spark-defaults.conf" | MC_HOST_local="http://$MINIO_ROOT_USER:$MINIO_ROOT_PASSWORD@127.0.0.1:9000" mcli pipe "local/$0/spark-logs/.keep" >/dev/null' \
+  "$SILO_BUCKET"
+
 # Shared credentials Secret; the Hub hook copies it into each user namespace.
 kc -n "$LAB_NAMESPACE" create secret generic silo-shared-credentials \
   --from-literal=accessKey="$SILO_SHARED_ACCESS_KEY" \
   --from-literal=secretKey="$SILO_SHARED_SECRET_KEY" \
   --dry-run=client -o yaml | kc apply -f - >/dev/null
+
+# Spark History Server (reads the event logs above).
+sed "s#image: spark-lab-runtime:[^ ]*#image: $RUNTIME_IMAGE#" k8s/60-history-server.yaml | kc apply -f - >/dev/null
+# Restart so a rebuilt runtime image (same tag) is picked up.
+kc -n "$LAB_NAMESPACE" rollout restart deploy/spark-history >/dev/null
 
 log "5/8 Publishing portal page and Spark UI proxy"
 kc -n "$LAB_NAMESPACE" create configmap portal-html --from-file=index.html=portal/index.html \
@@ -160,7 +172,17 @@ hm upgrade --install traefik traefik/traefik \
   --values traefik/values.yaml \
   --set ports.web.exposedPort="$LAB_PORT" \
   --wait --timeout 5m >/dev/null
-# Ingress and Middleware objects need the Traefik CRDs installed above.
+# Headlamp: admin-only Kubernetes UI. Its own ServiceAccount has no rights;
+# logins use a token from scripts/headlamp-token.sh (read-only "view").
+ensure_chart headlamp https://kubernetes-sigs.github.io/headlamp/ headlamp/headlamp "$HEADLAMP_CHART_VERSION"
+hm upgrade --install headlamp headlamp/headlamp \
+  --namespace "$HEADLAMP_NAMESPACE" --create-namespace \
+  --version "$HEADLAMP_CHART_VERSION" \
+  --values headlamp/values.yaml \
+  --wait --timeout 5m >/dev/null
+kc apply -f k8s/70-headlamp-viewer.yaml >/dev/null
+# Ingress and Middleware objects need the Traefik CRDs installed above and the
+# headlamp namespace.
 kc apply -f k8s/50-ingress.yaml >/dev/null
 
 log "7/8 Installing JupyterHub"
@@ -207,6 +229,8 @@ $(for ip in $(lan_ips); do echo "  From the LAN:        http://$ip:$LAB_PORT/"; 
 
   Admin login:         user=$JUPYTER_USER  password=$JUPYTER_PASSWORD
   New users:           self-register at /hub/signup, then admin approves at /hub/authorize
+  History Server:      http://localhost:$LAB_PORT/history/
+  Headlamp (admin):    http://localhost:$LAB_PORT/headlamp/  (login token: scripts/headlamp-token.sh)
   Silo Console login:  accessKey=$SILO_ACCESS_KEY  secretKey=$SILO_SECRET_KEY
   (stored in .lab/credentials.env)
 

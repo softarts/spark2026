@@ -6,6 +6,8 @@
 #   /spark-ui/<user>/       Spark UI of <user>'s Notebook Driver (Local / Client Mode)
 #   /spark-driver/<user>/   Spark UI of <user>'s running Cluster-Mode Driver Pod
 #   /silo                   Silo Web Console
+#   /history                Spark History Server (finished applications)
+#   /headlamp               Headlamp Kubernetes UI (admin only: token login)
 # The two Spark UI paths go to the Portal nginx, which picks the user's
 # namespace from the URL (portal/default.conf.template).
 ---
@@ -65,3 +67,57 @@ spec:
             pathType: Prefix
             backend:
               service: {name: silo, port: {number: 9001}}
+---
+# History Server: strip /history and announce it, like the live Spark UI
+# (images/spark-defaults.conf sets spark.ui.proxyRedirectUri for redirects).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: history-prefix
+  namespace: spark-lab
+spec:
+  stripPrefix:
+    prefixes: ["/history"]
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: history-context
+  namespace: spark-lab
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Context: /history
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lab-history
+  namespace: spark-lab
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: spark-lab-history-prefix@kubernetescrd,spark-lab-history-context@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /history
+            pathType: Prefix
+            backend:
+              service: {name: spark-history, port: {number: 18080}}
+---
+# Headlamp serves itself under /headlamp (config.baseURL), so no rewriting.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lab-headlamp
+  namespace: headlamp
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /headlamp
+            pathType: Prefix
+            backend:
+              service: {name: headlamp, port: {number: 80}}

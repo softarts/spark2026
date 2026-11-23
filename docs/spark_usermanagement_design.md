@@ -1,7 +1,7 @@
 # Spark2026 多用户用户管理设计
 
 **文档类型：** 设计与实施计划（练手项目，只做用户管理的最小子集）
-**状态：** 已批准，进入实施。所有决定和逐项核实的结论汇总于此，取代之前的分计划、审查和 H1 分析文档。
+**状态：** Phase 1–3 已实施并通过验收（2026-11-23）。所有决定和逐项核实的结论汇总于此，取代之前的分计划、审查和 H1 分析文档。
 **核实说明：** 文中所有"已核实"的结论都来自对当前集群的只读检查或 server-side dry-run（不创建资源）。集群为 Docker Desktop Kubernetes v1.36.1，单节点 `desktop-control-plane`（同时是控制平面），节点容量 18 CPU / 16 GiB。
 
 ---
@@ -285,6 +285,38 @@ Phase 2 改动的文件：`jupyterhub/values.yaml`（`SPARK_LAB_DRIVER_HOST`、h
 | 3.1 | History Server：同一运行时镜像，在 `spark-lab` 运行，读 `s3a://spark-data/spark-logs/`，路由 `/history/`，共享不鉴权 | 作业结束后仍可查看，用户列显示 alice/bob |
 | 3.2 | Headlamp：仅管理员，绑定内置 `view` ClusterRole（不含 Secret），路由 `/headlamp/`，`startcluster.sh` 打印限时 token | 管理员能按 `user-*` namespace 看每个用户的 Notebook/Driver/Executor |
 | 3.3 | Portal 增加 History Server、Headlamp 入口及 `/spark-ui/<user>/` 说明 | — |
+
+**Phase 3 实施结果（2026-11-23，已通过，14/14）**
+
+验收脚本 `tests/phase3_acceptance.sh`（3.4 会故意删除 alice）。Phase 2 验收在 Phase 3 部署之后重跑，13/13 通过。
+
+| # | 结果 |
+|---|---|
+| 3.1 | alice 的 Local、Client、Cluster Mode 应用和 bob 的 Local 应用都出现在 History Server，Spark User 分别为 alice、bob；Cluster Mode 命令行上没有任何 S3A 配置，event log 凭证完全来自 `spark-defaults.conf` 的 `secretKeyRef`；`/history/history/<应用ID>/jobs/` 返回 200，导航链接带前缀 |
+| 3.2 | Headlamp：不带 token 访问 API 返回 403；`headlamp-viewer` token 能列出 `user-alice/jupyter-alice`、`user-alice/…-driver`、`user-bob/jupyter-bob`；读 Secret、删除 Pod 返回 403；Headlamp 自己的 ServiceAccount `can-i list pods -A` = no |
+| 3.3 | Portal 有 `/history/`、`/headlamp/`、`/spark-ui/<用户>/`、`/hub/signup` 入口 |
+| 3.4 | 删除 alice：她的 3 份 event log、`users/alice/`、命名空间全部删除；bob 的 event log 保留 |
+
+实现要点：
+
+| 项目 | 做法 |
+|---|---|
+| event log | `images/spark-defaults.conf`：`spark.eventLog.enabled=true`、`spark.eventLog.dir=s3a://spark-data/spark-logs/`。S3A 默认凭证改用 `EnvironmentVariableCredentialsProvider`（AWS SDK v2）：Notebook 通过 `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` 环境变量拿到，Driver 和 Executor Pod 通过 `spark.kubernetes.{driver,executor}.secretKeyRef.*` 从本命名空间的 `silo-shared-credentials` 拿到 |
+| event log 目录 | Spark 在目录不存在时拒绝启动，而 S3 上空前缀不算目录，所以 `startcluster.sh` 写入标记对象 `spark-logs/.keep` |
+| event log 格式 | Spark 4.1 默认滚动日志：目录 `eventlog_v2_<应用ID>/`（含 `events_1_<应用ID>.zstd` 和 `appstatus_<应用ID>`），已实测 |
+| History Server | `k8s/60-history-server.yaml`：同一运行时镜像，`start-history-server.sh` 前台运行，`spark.history.fs.update.interval=10s`；Traefik 去掉 `/history` 前缀并设置 `X-Forwarded-Context` |
+| 删除用户的 event log | Hub 调 History Server REST API，找出 `sparkUser` 等于用户名的应用 ID（先校验格式），交给一次性 `mcli` Pod 删除 `eventlog_v2_<ID>/` 及单文件形式。清理 Pod 的镜像固定为与 Silo 相同的 digest（Phase 1 时写成了无 tag 的 `pgsty/silo`，会拉取 `:latest`） |
+| Headlamp | chart 0.46.0，`config.baseURL=/headlamp`，关闭 chart 默认的 cluster-admin ClusterRoleBinding；登录 token 来自 `headlamp/headlamp-viewer`（ClusterRole `view`，不含 Secret），由 `scripts/headlamp-token.sh` 生成，默认 8 小时有效。与设计的差异：`startcluster.sh` 不直接打印 token，只提示命令，避免 token 留在终端历史和日志里 |
+
+**Phase 3 之后发现的问题（2026-11-23，已修复）：管理员 `spark` 无法启动 Notebook**
+
+| 项目 | 内容 |
+|---|---|
+| 现象 | `spark` 登录后 Spawn failed：`pods "jupyter-spark" is forbidden: error looking up service account spark-lab/spark-runner` |
+| 原因 | KubeSpawner 把 `namespace`、`pod_name`、`dns_name`、`pvc_name` 保存在 Hub 数据库，每次启动用 `load_state` 恢复，覆盖 `user_namespace_template`。`spark` 是单用户时代建的账号，保存的是 `namespace: spark-lab`，所以 Pod 被建到 `spark-lab`（那里没有 `spark-runner`）。验收中的 alice、bob 都是新用户，状态为空，因此没测出来。去掉 namespace 后还有第二个问题：保存的 `pvc_name` 让 KubeSpawner 认为 PVC 已存在而跳过创建，新 Pod 卡在 Pending（`persistentvolumeclaim "claim-spark" not found`） |
+| 修复 | `SparkLabSpawner.load_state`（`spark_lab_hook.py`）：保存的 namespace 不是 `user-<用户名>` 时丢弃全部保存状态；任何情况下都不采用保存的 `pvc_name`（名称由模板 `claim-<用户名>` 固定，KubeSpawner 会创建缺失的 PVC，已存在时视为成功） |
+| 验证 | `spark` 的 Notebook 在 `user-spark` 中启动，SA `spark-runner`，PVC `claim-spark` 新建并绑定；停止再启动后文件仍在（同一个 PV，日志 `PVC claim-spark already exists`）；Phase 2 回归 13/13 |
+| 影响 | `spark` 的旧 Notebook 主目录（`spark-lab/claim-spark`）在 Phase 1 已按决定删除，`user-spark` 中是一个新的空主目录 |
 
 ### Phase 4：以后
 

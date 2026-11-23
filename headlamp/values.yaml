@@ -1,0 +1,27 @@
+# Headlamp (Kubernetes SIG UI) at http://<host>:8080/headlamp/ - admin only.
+# Chart headlamp/headlamp 0.46.0 (Headlamp v0.46.0), pinned in scripts/lab.env.
+#
+# Access model:
+#   * Headlamp's own ServiceAccount gets NO permissions (the chart's default is
+#     a cluster-admin ClusterRoleBinding; disabled below).
+#   * Every API call uses the token the user pastes at login. Only the platform
+#     admin gets one: scripts/headlamp-token.sh issues a short-lived token for
+#     ServiceAccount headlamp/headlamp-viewer, bound to the built-in read-only
+#     ClusterRole "view" (no Secrets). See k8s/70-headlamp-viewer.yaml.
+#   * Resource ownership = namespace: user-<name> holds that user's Notebook,
+#     Driver and Executor Pods.
+config:
+  inCluster: true
+  baseURL: /headlamp
+  # Never fall back to Headlamp's own ServiceAccount token.
+  unsafeUseServiceAccountToken: false
+
+clusterRoleBinding:
+  create: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
