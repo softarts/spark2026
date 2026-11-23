@@ -87,12 +87,13 @@ kc -n "$LAB_NAMESPACE" create secret generic silo-root-credentials \
   --dry-run=client -o yaml | kc apply -f - >/dev/null
 kc apply -f k8s/10-spark-rbac.yaml \
          -f k8s/11-hub-rbac.yaml \
-         -f k8s/21-cluster-driver-ui-service.yaml \
          -f k8s/30-silo.yaml >/dev/null
 # Remove single-user-era objects (replaced by the per-user namespace model).
 kc -n "$LAB_NAMESPACE" delete pod jupyter-spark --ignore-not-found --now >/dev/null 2>&1 || true
 kc -n "$LAB_NAMESPACE" delete pvc claim-spark --ignore-not-found >/dev/null 2>&1 || true
-kc delete -f k8s/20-client-driver-service.yaml --ignore-not-found >/dev/null 2>&1 || true
+kc -n "$LAB_NAMESPACE" delete service spark-client-driver spark-cluster-driver-ui --ignore-not-found >/dev/null 2>&1 || true
+kc -n "$LAB_NAMESPACE" delete ingress lab-spark-ui lab-spark-driver --ignore-not-found >/dev/null 2>&1 || true
+kc -n "$LAB_NAMESPACE" delete middlewares.traefik.io spark-ui-prefix spark-ui-context spark-driver-prefix spark-driver-context --ignore-not-found >/dev/null 2>&1 || true
 kc -n "$LAB_NAMESPACE" delete serviceaccount spark-client --ignore-not-found >/dev/null 2>&1 || true
 kc -n "$LAB_NAMESPACE" delete role spark-driver --ignore-not-found >/dev/null 2>&1 || true
 kc -n "$LAB_NAMESPACE" delete rolebinding spark-client-driver --ignore-not-found >/dev/null 2>&1 || true
@@ -116,17 +117,32 @@ JSON
   mcli admin policy attach local spark-data-rw --user "$0" >/dev/null 2>&1 || true
 ' "$SILO_SHARED_ACCESS_KEY" "$SILO_SHARED_SECRET_KEY"
 
+# Public sample input for the examples: s3a://spark-data/shared/wordcount/.
+# Users read it; each user writes under s3a://spark-data/users/<name>/.
+kc -n "$LAB_NAMESPACE" exec -i deploy/silo -- sh -c \
+  'MC_HOST_local="http://$MINIO_ROOT_USER:$MINIO_ROOT_PASSWORD@127.0.0.1:9000" mcli pipe "local/$0/shared/wordcount/sample.txt" >/dev/null' \
+  "$SILO_BUCKET" <<'TXT'
+spark reads text from silo through s3a
+executors write parquet back to silo
+the silo console shows every object spark wrote
+spark spark silo
+TXT
+
 # Shared credentials Secret; the Hub hook copies it into each user namespace.
 kc -n "$LAB_NAMESPACE" create secret generic silo-shared-credentials \
   --from-literal=accessKey="$SILO_SHARED_ACCESS_KEY" \
   --from-literal=secretKey="$SILO_SHARED_SECRET_KEY" \
   --dry-run=client -o yaml | kc apply -f - >/dev/null
 
-log "5/8 Publishing portal page"
+log "5/8 Publishing portal page and Spark UI proxy"
 kc -n "$LAB_NAMESPACE" create configmap portal-html --from-file=index.html=portal/index.html \
   --dry-run=client -o yaml | kc apply -f - >/dev/null
+kc -n "$LAB_NAMESPACE" create configmap portal-nginx \
+  --from-file=default.conf.template=portal/default.conf.template \
+  --dry-run=client -o yaml | kc apply -f - >/dev/null
 kc apply -f k8s/40-portal.yaml >/dev/null
-# Pick up a changed index.html (ConfigMap volume updates are delayed otherwise).
+# Pick up a changed page / nginx template (ConfigMap volume updates are delayed
+# otherwise, and the template is only rendered at container start).
 kc -n "$LAB_NAMESPACE" rollout restart deploy/portal >/dev/null
 
 ensure_chart() { # repo-name repo-url chart version

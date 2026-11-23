@@ -1,6 +1,8 @@
-# Static portal page served at http://<host>:8080/.
-# The page itself lives in portal/index.html; startcluster.sh publishes it as
-# ConfigMap "portal-html" before applying this file.
+# Portal at http://<host>:8080/ : the static page (portal/index.html) and the
+# per-user Spark UI reverse proxy (portal/default.conf.template).
+# startcluster.sh publishes both files as ConfigMaps before applying this file:
+#   portal-html   -> /usr/share/nginx/html
+#   portal-nginx  -> /etc/nginx/templates  (rendered by the image entrypoint)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,12 +27,20 @@ spec:
           # nginx 1.29.8, unprivileged variant (listens on 8080, runs as UID 101).
           image: nginxinc/nginx-unprivileged:1.29-alpine@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6
           imagePullPolicy: IfNotPresent
+          env:
+            # Export NGINX_LOCAL_RESOLVERS (cluster DNS from /etc/resolv.conf)
+            # for the template's `resolver` directive.
+            - name: NGINX_ENTRYPOINT_LOCAL_RESOLVERS
+              value: "1"
           ports:
             - name: http
               containerPort: 8080
           volumeMounts:
             - name: html
               mountPath: /usr/share/nginx/html
+              readOnly: true
+            - name: nginx-templates
+              mountPath: /etc/nginx/templates
               readOnly: true
           readinessProbe:
             httpGet: {path: /, port: http}
@@ -41,6 +51,9 @@ spec:
         - name: html
           configMap:
             name: portal-html
+        - name: nginx-templates
+          configMap:
+            name: portal-nginx
 ---
 apiVersion: v1
 kind: Service

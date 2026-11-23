@@ -15,6 +15,8 @@
   .card h2 a { color: #0969da; text-decoration: none; }
   .card p { margin: 4px 0; font-size: 13px; color: #57606a; }
   .card code { background: #f0f2f4; padding: 1px 5px; border-radius: 4px; }
+  .userbar { background: #fff; border: 1px solid #d8dee4; border-radius: 8px; padding: 12px 20px; margin-bottom: 14px; font-size: 14px; }
+  .userbar input { font-size: 14px; padding: 3px 6px; width: 160px; }
   .status { white-space: nowrap; font-size: 13px; font-weight: 600; align-self: center; padding: 4px 10px; border-radius: 12px; background: #eaeef2; }
   .up { background: #dafbe1; color: #1a7f37; }
   .down { background: #ffebe9; color: #cf222e; }
@@ -27,55 +29,62 @@
   <p>统一入口 · 所有服务都经由同一个 Ingress 端口访问，无需 kubectl port-forward</p>
 </header>
 <main>
+  <div class="userbar">
+    查看谁的 Spark UI：<input id="who" placeholder="用户名，如 alice" autocomplete="off">
+    <span style="color:#57606a">（所有人都能查看所有用户的 Spark UI，不鉴权）</span>
+  </div>
+
   <div class="card">
     <div>
       <h2><a href="/hub/">JupyterHub / Notebook</a></h2>
       <p>登录后进入 JupyterLab。示例位于 <code>work/examples/</code>（每次启动 Notebook Server 时从镜像刷新）。</p>
-      <p>用户名 <code>spark</code>；密码由 <code>startcluster.sh</code> 打印，保存在 Mac 上的 <code>.lab/credentials.env</code>。</p>
+      <p>新用户在 <a href="/hub/signup">/hub/signup</a> 注册，管理员 <code>spark</code> 在 <a href="/hub/authorize">/hub/authorize</a> 批准后才能登录。每个用户的 Notebook 运行在自己的命名空间 <code>user-&lt;用户名&gt;</code>。</p>
+      <p>管理员密码由 <code>startcluster.sh</code> 打印，保存在 Mac 上的 <code>.lab/credentials.env</code>。</p>
     </div>
     <span class="status" data-check="/hub/health">…</span>
   </div>
 
   <div class="card">
     <div>
-      <h2><a href="/spark-ui/">Spark UI — Notebook Driver</a></h2>
+      <h2><a data-user-link="/spark-ui/{u}/" href="#">Spark UI — Notebook Driver</a></h2>
       <p>Local Mode 与 Kubernetes Client Mode：Driver 就在 Notebook Pod 的 Jupyter kernel 进程里。</p>
-      <p>只有 SparkSession 存活时才有内容；<code>spark.stop()</code> 之后显示不可用。仅转发第一个 Session 的 4040 端口。</p>
+      <p>地址 <code>/spark-ui/&lt;用户名&gt;/</code>。只有 SparkSession 存活时才有内容；仅转发该用户 Notebook Pod 的 4040 端口（第一个 Session）。</p>
     </div>
-    <span class="status" data-check="/spark-ui/api/v1/applications">…</span>
+    <span class="status" data-user-check="/spark-ui/{u}/api/v1/applications">…</span>
   </div>
 
   <div class="card">
     <div>
-      <h2><a href="/spark-driver/">Spark UI — Cluster Mode Driver Pod</a></h2>
-      <p>Kubernetes Cluster Mode：<code>spark-submit</code> 创建的独立 Driver Pod（标签 <code>spark-role=driver</code>）。</p>
+      <h2><a data-user-link="/spark-driver/{u}/" href="#">Spark UI — Cluster Mode Driver Pod</a></h2>
+      <p>Kubernetes Cluster Mode：<code>spark-submit</code> 在用户命名空间中创建的独立 Driver Pod。地址 <code>/spark-driver/&lt;用户名&gt;/</code>。</p>
       <p>只在 Driver Pod 运行期间可用；作业结束后 Driver Pod 变为 Completed，UI 随之消失。</p>
     </div>
-    <span class="status" data-check="/spark-driver/api/v1/applications">…</span>
+    <span class="status" data-user-check="/spark-driver/{u}/api/v1/applications">…</span>
   </div>
 
   <div class="card">
     <div>
       <h2><a href="/silo/">Silo Object Storage Console</a></h2>
       <p>S3-compatible 对象存储（PGSTY 维护的 MinIO 社区分支）的 Web 控制台：浏览 Bucket、预览和下载对象。</p>
-      <p>Access Key / Secret Key 由 <code>startcluster.sh</code> 打印。集群内 S3 Endpoint：<code>http://silo.spark-lab.svc:9000</code>。</p>
+      <p>Console 登录使用 Silo 管理员密钥（只有平台管理员持有，<code>.lab/credentials.env</code>）。Notebook 中使用的是所有用户共享的非 root 用户 <code>lab-user</code>。集群内 S3 Endpoint：<code>http://silo.spark-lab.svc:9000</code>。</p>
     </div>
     <span class="status" data-check="/silo/">…</span>
   </div>
 </main>
 <footer>
-  个人学习环境：DummyAuthenticator、无 TLS。只在可信局域网内使用，不要暴露到公网。
+  个人学习环境：本地账号（NativeAuthenticator）、无 TLS、Spark UI 不鉴权。只在可信局域网内使用，不要暴露到公网。
 </footer>
 <script>
-  // Lightweight reachability check: any HTTP status below 500 counts as "up".
-  // 502/503/504 from Traefik means the backend Pod or SparkSession is not running.
+  // Reachability check: any HTTP status below 500 counts as "up".
+  // 502 from the portal means no Spark UI is running for that user.
   // For Spark UIs the REST API response also names the running application.
-  document.querySelectorAll("[data-check]").forEach(async (el) => {
+  async function check(el, url) {
+    el.className = "status"; el.textContent = "…";
     try {
-      const r = await fetch(el.dataset.check, { redirect: "manual", cache: "no-store" });
+      const r = await fetch(url, { redirect: "manual", cache: "no-store" });
       const up = r.type === "opaqueredirect" || r.status < 500;
       let label = up ? "运行中" : "未运行 (" + r.status + ")";
-      if (up && el.dataset.check.includes("/api/v1/applications")) {
+      if (up && url.includes("/api/v1/applications")) {
         try {
           const apps = await r.json();
           if (apps.length) label = "运行中: " + apps.map((a) => a.name).join(", ");
@@ -87,7 +96,25 @@
       el.textContent = "不可达";
       el.classList.add("down");
     }
-  });
+  }
+  document.querySelectorAll("[data-check]").forEach((el) => check(el, el.dataset.check));
+
+  // Per-user Spark UI links; the chosen user name is remembered in this browser.
+  const who = document.getElementById("who");
+  who.value = localStorage.getItem("sparkLabUser") || "";
+  function refreshUser() {
+    const u = who.value.trim().toLowerCase();
+    localStorage.setItem("sparkLabUser", u);
+    document.querySelectorAll("[data-user-link]").forEach((a) => {
+      a.href = u ? a.dataset.userLink.replace("{u}", encodeURIComponent(u)) : "#";
+    });
+    document.querySelectorAll("[data-user-check]").forEach((el) => {
+      if (u) check(el, el.dataset.userCheck.replace("{u}", encodeURIComponent(u)));
+      else { el.className = "status"; el.textContent = "请输入用户名"; }
+    });
+  }
+  who.addEventListener("change", refreshUser);
+  refreshUser();
 </script>
 </body>
 </html>

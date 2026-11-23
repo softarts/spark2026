@@ -124,16 +124,22 @@ async def _provision_namespace(username: str, log):
 
         # ResourceQuota: cap only requests and object counts (not limits), so
         # Spark pods that set requests but no cpu limit are not rejected.
+        # Sizing (requests): Notebook 1 CPU / 2G; a Spark pod with 1g heap is
+        # ~1.4Gi (heap + overhead). Cluster Mode = Notebook + Driver + 2
+        # Executors ~= 6.1Gi, so memory is capped at 8Gi.
+        quota_hard = {
+            "requests.cpu": "4",
+            "requests.memory": "8Gi",
+            "pods": "12",
+            "persistentvolumeclaims": "2",
+        }
         quota = client.V1ResourceQuota(
             metadata=client.V1ObjectMeta(name="user-quota", namespace=ns),
-            spec=client.V1ResourceQuotaSpec(hard={
-                "requests.cpu": "4",
-                "requests.memory": "6Gi",
-                "pods": "12",
-                "persistentvolumeclaims": "2",
-            }),
+            spec=client.V1ResourceQuotaSpec(hard=quota_hard),
         )
         await _ignore_conflict(core.create_namespaced_resource_quota(ns, quota))
+        await core.patch_namespaced_resource_quota(
+            "user-quota", ns, {"spec": {"hard": quota_hard}})
 
         # LimitRange: default request for any container that sets none (e.g. the
         # prepare-home init container), so the ResourceQuota above does not reject
@@ -227,3 +233,6 @@ c.JupyterHub.spawner_class = SparkLabSpawner           # noqa: F821 (c is inject
 c.KubeSpawner.enable_user_namespaces = True            # noqa: F821
 c.KubeSpawner.user_namespace_template = "user-{username}"  # noqa: F821
 c.KubeSpawner.pre_spawn_hook = spark_lab_pre_spawn_hook    # noqa: F821
+# Notebook servers run in user-<name> namespaces, where the chart's short
+# hub URL (http://hub:8081) does not resolve. Use the fully qualified name.
+c.JupyterHub.hub_connect_url = "http://hub.spark-lab.svc.cluster.local:8081"  # noqa: F821

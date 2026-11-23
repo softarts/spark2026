@@ -85,9 +85,11 @@ on_node() { kc -n kube-system exec -i "$LOADER_POD" -- nsenter -t 1 -m -- "$@"; 
 sync_image_to_node() {
   local image="$1" want="$2" have
   start_loader
+  # </dev/null: `kubectl exec -i` would otherwise read the terminal and get
+  # stopped (SIGTTIN) when this script runs in the background.
   have=$(on_node crictl inspecti -o go-template \
           --template "{{index .info.imageSpec.config.Labels \"$HASH_LABEL\"}}" \
-          "docker.io/library/$image" 2>/dev/null || true)
+          "docker.io/library/$image" </dev/null 2>/dev/null || true)
   if [ "$have" = "$want" ]; then
     log "    node already has $image (inputs $want)"
   else

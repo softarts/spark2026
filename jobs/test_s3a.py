@@ -30,8 +30,11 @@ spark = (
 
 ts = int(time.time())
 bucket = "spark-data"
-input_dir = f"s3a://{bucket}/run-{ts}/input"
-output_dir = f"s3a://{bucket}/run-{ts}/output"
+# Per-user prefix (a convention, not isolation): s3a://spark-data/users/<name>/.
+# Deleting the user in JupyterHub also deletes this prefix.
+user = os.environ.get("SPARK_USER", "unknown")
+input_dir = f"s3a://{bucket}/users/{user}/test-s3a/run-{ts}/input"
+output_dir = f"s3a://{bucket}/users/{user}/test-s3a/run-{ts}/output"
 
 print(f"Writing sample dataset to {input_dir} using DataFrame overwrite...")
 sample_rows = [

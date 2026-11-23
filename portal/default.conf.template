@@ -1,0 +1,59 @@
+# Portal nginx: static page + per-user Spark UI routing (multi-user lab).
+# Rendered by the nginx image entrypoint (envsubst) into conf.d/default.conf.
+# ${NGINX_LOCAL_RESOLVERS} is the cluster DNS server from /etc/resolv.conf
+# (enabled by NGINX_ENTRYPOINT_LOCAL_RESOLVERS in k8s/40-portal.yaml).
+#
+#   /spark-ui/<user>/...      -> spark-ui.user-<user>:4040        (Local / Client Mode driver
+#                                                                  in the Notebook Pod)
+#   /spark-driver/<user>/...  -> spark-driver-ui.user-<user>:4040 (running Cluster Mode driver)
+#
+# No authentication: every user can open every UI (accepted, see
+# docs/spark_usermanagement_design.md §2). The user name in the URL only
+# selects which namespace's Service to reach; it cannot address anything else.
+server {
+    listen       8080;
+    server_name  _;
+    # Relative Location headers: keep whatever host:port the browser used.
+    absolute_redirect off;
+
+    # Per-request DNS so new user namespaces work without reloading nginx.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+    resolver_timeout 3s;
+
+    location / {
+        root   /usr/share/nginx/html;
+        index  index.html;
+    }
+
+    # /spark-ui/alice -> /spark-ui/alice/
+    location ~ ^/(spark-ui|spark-driver)/([a-z0-9-]+)$ {
+        return 302 /$1/$2/;
+    }
+
+    location ~ ^/spark-ui/([a-z0-9-]+)(/.*)$ {
+        set $spark_user $1;
+        set $spark_path $2;
+        proxy_pass http://spark-ui.user-$spark_user.svc.cluster.local:4040$spark_path$is_args$args;
+        # Spark UI builds links and (with spark.ui.proxyRedirectUri=/) redirects
+        # from these two headers.
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Context /spark-ui/$spark_user;
+        proxy_connect_timeout 3s;
+        error_page 502 503 504 = @no_spark_ui;
+    }
+
+    location ~ ^/spark-driver/([a-z0-9-]+)(/.*)$ {
+        set $spark_user $1;
+        set $spark_path $2;
+        proxy_pass http://spark-driver-ui.user-$spark_user.svc.cluster.local:4040$spark_path$is_args$args;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Context /spark-driver/$spark_user;
+        proxy_connect_timeout 3s;
+        error_page 502 503 504 = @no_spark_ui;
+    }
+
+    location @no_spark_ui {
+        default_type text/plain;
+        return 502 "No Spark UI is running here.\nLocal/Client Mode: start a SparkSession in your Notebook (only the session on port 4040 is shown).\nCluster Mode: the UI exists only while the Driver Pod is Running.\n";
+    }
+}

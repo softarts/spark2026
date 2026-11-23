@@ -22,7 +22,7 @@
 | 项目 | 决定 | 含义 |
 |---|---|---|
 | Pod Security | **做 baseline**（§5） | 堵住特权 Pod 提权（§4）。这是唯一一项从"不做"改为"做"的决定 |
-| NetworkPolicy | 不做 | Pod 之间网络互通，用户可以访问彼此的 Spark UI 和 RPC 端口。属于信息泄露，不是提权。类比 Jenkins：所有人都能看到所有作业 |
+| NetworkPolicy | 不做 | Pod 之间网络互通，用户可以访问彼此的 Spark UI 和 RPC 端口。属于信息泄露，不是提权。类比 Jenkins：所有人都能看到所有作业。另外已实测（2026-11-23）：Docker Desktop 的 kindnet **不执行** NetworkPolicy（deny-all egress 策略下仍能连通），所以即使配置了策略在本环境也不生效 |
 | Silo 凭证 | 所有用户共享一个非 root 凭证 | 用户之间可以读写彼此的对象，目录前缀只是约定，不是隔离 |
 | 管理员进入用户服务器 | 接受 | `spark` 是 JupyterHub 管理员，保留 `admin_access: true`，可进入任何用户的 Notebook |
 | Spark UI 鉴权 | 不做 | 所有人都能看到所有作业。jupyter-server-proxy 推迟到 Phase 4 |
@@ -193,7 +193,7 @@ H1 不是最佳实践，但改动最小、不引入外部依赖。演进路径�
 | Secret `silo-shared-credentials` | 从 `spark-lab` 复制的非 root 凭证 |
 | Service `spark-ui` | selector `component=singleuser-server`，端口 4040 |
 | Service `spark-driver-ui` | selector `spark-role=driver`，端口 4040 |
-| ResourceQuota `user-quota` | 只限制 requests：`requests.cpu: 4`、`requests.memory: 6Gi`、`pods: 10`、`persistentvolumeclaims: 2`（只限 requests，避免拒绝 Spark 默认无 cpu-limit 的 Pod；数值可调） |
+| ResourceQuota `user-quota` | 只限制 requests：`requests.cpu: 4`、`requests.memory: 8Gi`、`pods: 12`、`persistentvolumeclaims: 2`（只限 requests，避免拒绝 Spark 默认无 cpu-limit 的 Pod。8Gi 的依据：Notebook 2G + Cluster Mode Driver 约 1.4Gi + 2 个 Executor 各约 1.4Gi ≈ 6.1Gi，6Gi 不够） |
 
 3. 任一步失败则抛异常，Notebook 不启动；用户在 spawn 页、管理员在 Hub 日志看到原因。
 
@@ -251,6 +251,32 @@ H1 不是最佳实践，但改动最小、不引入外部依赖。演进路径�
 | 2.4 | alice 提交时指定 `spark.kubernetes.namespace=user-bob` | RBAC 拒绝（403） |
 | 2.5 | `/spark-ui/alice/`、`/spark-ui/bob/`、`/spark-driver/alice/` | 都能开，跳转带正确前缀 |
 | 2.6 | 03 S3A Notebook | 读 `shared/`，写 `users/alice/` |
+
+**Phase 2 实施结果（2026-11-23，已通过，13/13）**
+
+验收脚本 `tests/phase2_acceptance.sh`（辅助函数 `tests/lib.sh`），全部操作都在 alice / bob 自己的 Notebook Pod 中、用各自的 `spark-runner` token 执行；`--cleanup` 结束时删除两个测试用户。
+
+| # | 结果 |
+|---|---|
+| 2.1 | alice、bob 同时运行 02：Executor 分别位于 `user-alice`、`user-bob`（观察期间只出现这两个 namespace），计数正确 |
+| 2.2 | alice 的同一个 Pod 中两个 Driver 进程各自拿到自己的 Executor（Pod IP + 随机端口，不冲突） |
+| 2.3 | Cluster Mode：Driver 和 Executor 都在 `user-alice`，Driver SA 为 `spark-runner`；Executor 用共享凭证从 `shared/wordcount/` 读、向 `users/alice/cluster-wordcount/` 写，Driver 状态 Succeeded |
+| 2.4 | alice 指定 `spark.kubernetes.namespace=user-bob`：`pods is forbidden: User "system:serviceaccount:user-alice:spark-runner" cannot create resource "pods" ... in the namespace "user-bob"`，user-bob 中没有创建任何对象 |
+| 2.5 | `/spark-ui/alice/`、`/spark-ui/bob/` 各自显示本人的应用，跳转到 `/spark-ui/<user>/jobs/`，导航链接都带前缀；`/spark-driver/alice/` 同样正确 |
+| 2.6 | 03 Notebook：local 模式由 `jupyter-alice` 读 Silo，k8s 模式由 Executor Pod 读 Silo；都读 `shared/`、写 `users/alice/` |
+| PSA | Client Mode 设置 `spark.kubernetes.executor.volumes.hostPath.*`：Executor 创建被 `violates PodSecurity "baseline:v1.36": hostPath volumes` 拒绝（30 秒内重试 122 次），注册的 Executor 数为 0；与 §5 #8 的预期一致（作业挂起，需用户 `stop()`） |
+| 清理 | 删除 alice、bob 后：两个 namespace、Silo `users/` 下的数据、NativeAuthenticator 记录全部消失，`shared/` 保留 |
+
+实施中发现并修复的问题：
+
+| 问题 | 现象 | 修复 |
+|---|---|---|
+| Notebook 连不上 Hub | Notebook 在 `user-<name>` 中，Hub 注入的 `JUPYTERHUB_API_URL=http://hub:8081` 是短名，跨 namespace 解析失败；单用户服务器启动即退出，Hub 30 秒后放弃并删除 Pod | `c.JupyterHub.hub_connect_url = "http://hub.spark-lab.svc.cluster.local:8081"`（`spark_lab_hook.py`） |
+| Hub 入站策略 | chart 的 hub NetworkPolicy 默认只接受同 namespace 的 Notebook | `hub.networkPolicy.interNamespaceAccessLabels: accept`（本环境 kindnet 不执行策略，此项为可移植性） |
+| 后台运行 `startcluster.sh` 卡住 | `kubectl exec -i` 读取终端被 SIGTTIN 停止 | `scripts/common.sh` 中该调用加 `</dev/null` |
+| 配额不足 | 6Gi 容纳不了 Cluster Mode（Notebook + Driver + 2 Executor） | 提高到 8Gi，hook 对已有配额也执行 patch |
+
+Phase 2 改动的文件：`jupyterhub/values.yaml`（`SPARK_LAB_DRIVER_HOST`、hub networkPolicy）、`jupyterhub/spark_lab_hook.py`（`hub_connect_url`、配额）、`jobs/wordcount_executor.py`、`jobs/test_s3a.py`、`notebooks/01–03`、`portal/default.conf.template`（新）、`portal/index.html`、`k8s/40-portal.yaml`、`k8s/50-ingress.yaml`、`startcluster.sh`（上传 `shared/wordcount/sample.txt`、发布 nginx 模板、清理旧路由对象）、`scripts/common.sh`、`tests/`（新）；删除 `k8s/20-client-driver-service.yaml`、`k8s/21-cluster-driver-ui-service.yaml`。
 
 ### Phase 3：History Server 与管理视图
 

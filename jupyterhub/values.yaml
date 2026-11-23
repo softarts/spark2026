@@ -28,6 +28,14 @@ hub:
       minimum_password_length: 8
   service:
     type: ClusterIP
+  # Notebook pods now run in user-<name> namespaces. On a CNI that enforces
+  # NetworkPolicy, the chart's hub policy only admits Notebook pods from its own
+  # namespace; "accept" admits pods labelled hub.jupyter.org/network-access-hub
+  # from any namespace. (Egress to Notebooks is already allowed by the chart's
+  # default egressAllowRules.privateIPs.) Docker Desktop's kindnet does not
+  # enforce NetworkPolicy (verified 2026-11-23), so this is for portability.
+  networkPolicy:
+    interNamespaceAccessLabels: accept
   # jupyterhub/spark_lab_hook.py is appended here by startcluster.sh
   # (helm --set-file hub.extraConfig.sparkLabMultiuser=...). It enables user
   # namespaces and wires the provisioning hook and cleanup spawner.
@@ -89,6 +97,13 @@ singleuser:
     # {username} is expanded by KubeSpawner per user.
     SPARK_USER: "{username}"
     SPARK_LAB_NAMESPACE: "user-{username}"
+    # Client Mode: Executors connect back to the Driver at this Pod's IP
+    # (Downward API). Driver and BlockManager use random ports, so several
+    # Drivers in one Notebook Pod (several kernels) never collide.
+    SPARK_LAB_DRIVER_HOST:
+      valueFrom:
+        fieldRef:
+          fieldPath: status.podIP
     SPARK_LAB_RUNTIME_IMAGE: spark-lab-runtime:0.3.0
     SILO_ENDPOINT: http://silo.spark-lab.svc:9000
     # Shared NON-root Silo credentials, copied into user-<name> by the hook.
