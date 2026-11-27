@@ -84,6 +84,8 @@ Phase 4（可选，未开始）：每用户 Silo 凭证与策略、Spark UI 鉴�
 
 Phase 3 之后修复：管理员 `spark`（单用户时代的旧账号）启动 Notebook 失败，原因是 Hub 数据库中保存的旧 Spawner 状态（namespace `spark-lab`、`pvc_name`）。`SparkLabSpawner.load_state` 已处理，详见设计文档 §7 "Phase 3 之后发现的问题"。新用户不受影响。
 
+已记录、暂不实施：依图风格的人脸抓拍流水线实验，见 `docs/face_pipeline_experiment_design.md`。
+
 已知的小问题：Phase 2 验收的 2.5（Cluster Mode Driver UI 跳转）曾两次在连续删建用户后失败，单独复现和之后的三次完整运行都通过；测试已加诊断输出，如再失败会打印最后的状态码和 Driver Pod 状态。
 
 ## 6. 环境与运维速查
